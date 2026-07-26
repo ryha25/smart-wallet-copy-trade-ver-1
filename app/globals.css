@@ -1,0 +1,43 @@
+@import "tailwindcss";
+@import "@solana/wallet-adapter-react-ui/styles.css";
+
+:root {
+  color-scheme: dark;
+  --bg: #080b0d;
+  --panel: #0f1417;
+  --panel-2: #131a1e;
+  --line: #202a30;
+  --muted: #819099;
+  --text: #edf4f1;
+  --green: #2ee6a6;
+  --red: #ff6b76;
+  --amber: #f7b955;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 80% -10%, rgba(46,230,166,.08), transparent 30rem),
+    var(--bg);
+  color: var(--text);
+  font-family: Inter, "Noto Sans JP", system-ui, sans-serif;
+}
+button, input, select { font: inherit; }
+button { cursor: pointer; }
+::selection { background: rgba(46,230,166,.3); }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+.num { font-variant-numeric: tabular-nums; }
+
+@keyframes pulse-line { 0%,100%{opacity:.45} 50%{opacity:1} }
+.live-dot { animation: pulse-line 1.8s ease-in-out infinite; }
+.wallet-adapter-button {
+  height: 34px !important;
+  border: 1px solid #2d3a40 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  padding: 0 12px !important;
+  font-size: 12px !important;
+}
+.wallet-adapter-button:hover { border-color: #2ee6a6 !important; background: #11181b !important; }

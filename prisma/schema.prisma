@@ -1,0 +1,295 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TradeSide {
+  BUY
+  SELL
+}
+
+enum TradeStatus {
+  OPEN
+  CLOSED
+  SKIPPED
+}
+
+enum SettlementReason {
+  SOURCE_SOLD
+  TAKE_PROFIT
+  STOP_LOSS
+  MANUAL
+  MAX_HOLDING_TIME
+  RISK_DETECTED
+}
+
+enum RiskLevel {
+  SAFE
+  CAUTION
+  DANGEROUS
+}
+
+model User {
+  id             String          @id @default(cuid())
+  walletAddress  String?         @unique @map("wallet_address")
+  displayName    String?         @map("display_name")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+  favoriteTokens FavoriteToken[]
+  copySettings   CopySettings?
+  paperPositions PaperPosition[]
+  paperTrades    PaperTrade[]
+  skippedTrades  SkippedTrade[]
+  @@map("users")
+}
+
+model TrackedWallet {
+  id                 String                @id @default(cuid())
+  address            String                @unique
+  displayName        String                @map("display_name")
+  firstTradeAt       DateTime              @map("first_trade_at")
+  isCopyEnabled      Boolean               @default(false) @map("is_copy_enabled")
+  isBlocked          Boolean               @default(false) @map("is_blocked")
+  riskFlags          String[]              @default([]) @map("risk_flags")
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @updatedAt @map("updated_at")
+  statistics         WalletStatistic[]
+  scores             WalletScore[]
+  trades             WalletTrade[]
+  holdings           WalletHolding[]
+  favoriteTokenLinks FavoriteTokenWallet[]
+  paperPositions     PaperPosition[]
+  paperTrades         PaperTrade[]
+  skippedTrades      SkippedTrade[]
+  @@map("tracked_wallets")
+}
+
+model WalletStatistic {
+  id                  String        @id @default(cuid())
+  walletId            String        @map("wallet_id")
+  periodStart         DateTime      @map("period_start")
+  periodEnd           DateTime      @map("period_end")
+  roi30d              Decimal       @db.Decimal(12, 4) @map("roi_30d")
+  realizedProfitUsd   Decimal       @db.Decimal(20, 6) @map("realized_profit_usd")
+  realizedProfitSol   Decimal       @db.Decimal(20, 9) @map("realized_profit_sol")
+  unrealizedProfitUsd Decimal       @db.Decimal(20, 6) @map("unrealized_profit_usd")
+  unrealizedProfitSol Decimal       @db.Decimal(20, 9) @map("unrealized_profit_sol")
+  winRate             Decimal       @db.Decimal(8, 4) @map("win_rate")
+  averageRoi          Decimal       @db.Decimal(12, 4) @map("average_roi")
+  averageWinRate      Decimal       @db.Decimal(12, 4) @map("average_win_rate")
+  averageLossRate     Decimal       @db.Decimal(12, 4) @map("average_loss_rate")
+  averageHoldingSec   Int           @map("average_holding_sec")
+  maxDrawdown         Decimal       @db.Decimal(12, 4) @map("max_drawdown")
+  tradeCount          Int           @map("trade_count")
+  sellCount           Int           @map("sell_count")
+  profitableTradeCount Int          @map("profitable_trade_count")
+  wallet              TrackedWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  @@unique([walletId, periodStart, periodEnd])
+  @@map("wallet_statistics")
+}
+
+model WalletScore {
+  id                    String        @id @default(cuid())
+  walletId              String        @map("wallet_id")
+  calculatedAt          DateTime      @default(now()) @map("calculated_at")
+  total                 Int
+  roiPoints             Int           @map("roi_points")
+  realizedProfitPoints  Int           @map("realized_profit_points")
+  winRatePoints         Int           @map("win_rate_points")
+  consistencyPoints     Int           @map("consistency_points")
+  drawdownPoints        Int           @map("drawdown_points")
+  tradeCountPoints      Int           @map("trade_count_points")
+  agePoints             Int           @map("age_points")
+  favoriteTokenPoints   Int           @map("favorite_token_points")
+  penaltyPoints         Int           @default(0) @map("penalty_points")
+  exclusionReason       String?       @map("exclusion_reason")
+  wallet                TrackedWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  @@index([total])
+  @@map("wallet_scores")
+}
+
+model WalletTrade {
+  id              String        @id @default(cuid())
+  walletId        String        @map("wallet_id")
+  signature       String        @unique
+  tokenMint       String        @map("token_mint")
+  tokenSymbol     String?       @map("token_symbol")
+  side            TradeSide
+  tradedAt        DateTime      @map("traded_at")
+  priceUsd        Decimal       @db.Decimal(30, 12) @map("price_usd")
+  priceSol        Decimal       @db.Decimal(30, 12) @map("price_sol")
+  amountToken     Decimal       @db.Decimal(30, 12) @map("amount_token")
+  valueUsd        Decimal       @db.Decimal(20, 6) @map("value_usd")
+  valueSol        Decimal       @db.Decimal(20, 9) @map("value_sol")
+  realizedPnlUsd  Decimal?      @db.Decimal(20, 6) @map("realized_pnl_usd")
+  realizedPnlSol  Decimal?      @db.Decimal(20, 9) @map("realized_pnl_sol")
+  wallet          TrackedWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  @@index([walletId, tradedAt])
+  @@index([tokenMint, tradedAt])
+  @@map("wallet_trades")
+}
+
+model WalletHolding {
+  id              String        @id @default(cuid())
+  walletId        String        @map("wallet_id")
+  tokenMint       String        @map("token_mint")
+  tokenSymbol     String?       @map("token_symbol")
+  quantity        Decimal       @db.Decimal(30, 12)
+  averageCostUsd  Decimal       @db.Decimal(30, 12) @map("average_cost_usd")
+  averageCostSol  Decimal       @db.Decimal(30, 12) @map("average_cost_sol")
+  currentValueUsd Decimal       @db.Decimal(20, 6) @map("current_value_usd")
+  currentValueSol Decimal       @db.Decimal(20, 9) @map("current_value_sol")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  wallet          TrackedWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  @@unique([walletId, tokenMint])
+  @@map("wallet_holdings")
+}
+
+model FavoriteToken {
+  id          String                @id @default(cuid())
+  userId      String                @map("user_id")
+  name        String
+  symbol      String
+  tokenMint   String                @map("token_mint")
+  iconUrl     String?               @map("icon_url")
+  createdAt   DateTime              @default(now()) @map("created_at")
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  walletLinks FavoriteTokenWallet[]
+  @@unique([userId, tokenMint])
+  @@map("favorite_tokens")
+}
+
+model FavoriteTokenWallet {
+  id                   String        @id @default(cuid())
+  favoriteTokenId      String        @map("favorite_token_id")
+  walletId             String        @map("wallet_id")
+  realizedProfitUsd    Decimal       @db.Decimal(20, 6) @map("realized_profit_usd")
+  realizedProfitSol    Decimal       @db.Decimal(20, 9) @map("realized_profit_sol")
+  tradeCount           Int           @map("trade_count")
+  sellCount            Int           @map("sell_count")
+  favoriteToken        FavoriteToken @relation(fields: [favoriteTokenId], references: [id], onDelete: Cascade)
+  wallet               TrackedWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  @@unique([favoriteTokenId, walletId])
+  @@map("favorite_token_wallets")
+}
+
+model CopySettings {
+  id                    String   @id @default(cuid())
+  userId                String   @unique @map("user_id")
+  enabled               Boolean  @default(true)
+  amountPerTradeUsd     Decimal  @db.Decimal(20, 6) @map("amount_per_trade_usd")
+  maxPositions          Int      @map("max_positions")
+  maxDailyAmountUsd     Decimal  @db.Decimal(20, 6) @map("max_daily_amount_usd")
+  stopLossPercent       Decimal  @db.Decimal(8, 4) @map("stop_loss_percent")
+  takeProfitPercent     Decimal  @db.Decimal(8, 4) @map("take_profit_percent")
+  maxSlippagePercent    Decimal  @db.Decimal(8, 4) @map("max_slippage_percent")
+  maxWallets            Int      @map("max_wallets")
+  allowDuplicateToken   Boolean  @default(false) @map("allow_duplicate_token")
+  favoritesOnly         Boolean  @default(false) @map("favorites_only")
+  minLiquidityUsd       Decimal  @db.Decimal(20, 6) @map("min_liquidity_usd")
+  minMarketCapUsd       Decimal  @db.Decimal(20, 6) @map("min_market_cap_usd")
+  maxDetectionSeconds   Int      @map("max_detection_seconds")
+  maxPriceRisePercent   Decimal  @db.Decimal(8, 4) @map("max_price_rise_percent")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@map("copy_settings")
+}
+
+model PaperPosition {
+  id                    String        @id @default(cuid())
+  userId                String        @map("user_id")
+  sourceWalletId        String        @map("source_wallet_id")
+  tokenMint             String        @map("token_mint")
+  tokenSymbol           String        @map("token_symbol")
+  sourceBoughtAt        DateTime      @map("source_bought_at")
+  copiedAt              DateTime      @map("copied_at")
+  detectionDelayMs      Int           @map("detection_delay_ms")
+  sourcePriceUsd        Decimal       @db.Decimal(30, 12) @map("source_price_usd")
+  copyPriceUsd          Decimal       @db.Decimal(30, 12) @map("copy_price_usd")
+  slippagePercent       Decimal       @db.Decimal(8, 4) @map("slippage_percent")
+  amountUsd             Decimal       @db.Decimal(20, 6) @map("amount_usd")
+  amountSol             Decimal       @db.Decimal(20, 9) @map("amount_sol")
+  quantity              Decimal       @db.Decimal(30, 12)
+  status                TradeStatus   @default(OPEN)
+  closedAt              DateTime?     @map("closed_at")
+  exitPriceUsd          Decimal?      @db.Decimal(30, 12) @map("exit_price_usd")
+  pnlPercent            Decimal?      @db.Decimal(12, 4) @map("pnl_percent")
+  pnlUsd                Decimal?      @db.Decimal(20, 6) @map("pnl_usd")
+  pnlSol                Decimal?      @db.Decimal(20, 9) @map("pnl_sol")
+  settlementReason      SettlementReason? @map("settlement_reason")
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceWallet          TrackedWallet @relation(fields: [sourceWalletId], references: [id])
+  @@index([userId, status])
+  @@map("paper_positions")
+}
+
+model PaperTrade {
+  id               String           @id @default(cuid())
+  userId           String           @map("user_id")
+  sourceWalletId   String           @map("source_wallet_id")
+  tokenMint        String           @map("token_mint")
+  tokenSymbol      String           @map("token_symbol")
+  side             TradeSide
+  tradedAt         DateTime         @map("traded_at")
+  buyPriceUsd      Decimal?         @db.Decimal(30, 12) @map("buy_price_usd")
+  sellPriceUsd     Decimal?         @db.Decimal(30, 12) @map("sell_price_usd")
+  amountUsd        Decimal          @db.Decimal(20, 6) @map("amount_usd")
+  amountSol        Decimal          @db.Decimal(20, 9) @map("amount_sol")
+  pnlPercent       Decimal?         @db.Decimal(12, 4) @map("pnl_percent")
+  pnlUsd           Decimal?         @db.Decimal(20, 6) @map("pnl_usd")
+  pnlSol           Decimal?         @db.Decimal(20, 9) @map("pnl_sol")
+  settlementReason SettlementReason? @map("settlement_reason")
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceWallet     TrackedWallet    @relation(fields: [sourceWalletId], references: [id])
+  @@index([userId, tradedAt])
+  @@map("paper_trades")
+}
+
+model SkippedTrade {
+  id                String        @id @default(cuid())
+  userId            String        @map("user_id")
+  sourceWalletId    String        @map("source_wallet_id")
+  tokenMint         String        @map("token_mint")
+  tokenSymbol       String?       @map("token_symbol")
+  detectedAt        DateTime      @map("detected_at")
+  sourceBoughtAt    DateTime      @map("source_bought_at")
+  reasonCode        String        @map("reason_code")
+  reasonDetail      String?       @map("reason_detail")
+  signalSnapshot    Json          @map("signal_snapshot")
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceWallet      TrackedWallet @relation(fields: [sourceWalletId], references: [id])
+  @@index([userId, detectedAt])
+  @@map("skipped_trades")
+}
+
+model TokenRiskCheck {
+  id                String    @id @default(cuid())
+  tokenMint         String    @map("token_mint")
+  checkedAt         DateTime  @default(now()) @map("checked_at")
+  riskLevel         RiskLevel @map("risk_level")
+  isHoneypot        Boolean   @map("is_honeypot")
+  hasFreezeAuthority Boolean  @map("has_freeze_authority")
+  hasMintAuthority  Boolean   @map("has_mint_authority")
+  liquidityUsd      Decimal   @db.Decimal(20, 6) @map("liquidity_usd")
+  marketCapUsd      Decimal   @db.Decimal(20, 6) @map("market_cap_usd")
+  flags             String[]  @default([])
+  rawResponse       Json?     @map("raw_response")
+  @@index([tokenMint, checkedAt])
+  @@map("token_risk_checks")
+}
+
+model SystemLog {
+  id        String   @id @default(cuid())
+  level     String
+  service   String
+  event     String
+  message   String
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+  @@index([service, createdAt])
+  @@map("system_logs")
+}
