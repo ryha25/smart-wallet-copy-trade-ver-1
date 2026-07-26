@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { defaultSettings, equityCurve, favorites as initialFavorites, positions, trades, wallets as initialWallets } from "../lib/mock-data";
 import type { CopySettings, FavoriteToken, Wallet } from "../lib/types";
+import type { LivePaperPosition, LiveWalletEvent, LiveWalletResponse } from "../lib/live-types";
 
-type View = "dashboard" | "wallets" | "favorites" | "settings" | "paper" | "history";
+type View = "live" | "dashboard" | "wallets" | "favorites" | "settings" | "paper" | "history";
 
 const nav: { id: View; label: string; glyph: string }[] = [
+  { id:"live", label:"実データ・デモ", glyph:"●" },
   { id:"dashboard", label:"ダッシュボード", glyph:"⌁" },
   { id:"wallets", label:"優秀ウォレット", glyph:"◉" },
   { id:"favorites", label:"お気に入りコイン", glyph:"☆" },
@@ -211,8 +214,125 @@ function History() {
   </>;
 }
 
+function LiveDemo({ settings }: { settings: CopySettings }) {
+  const { publicKey } = useWallet();
+  const [address,setAddress]=useState("");
+  const [data,setData]=useState<LiveWalletResponse|null>(null);
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+  const [monitoring,setMonitoring]=useState(false);
+  const [autoCopy,setAutoCopy]=useState(true);
+  const [paperPositions,setPaperPositions]=useState<LivePaperPosition[]>([]);
+  const [realizedPnl,setRealizedPnl]=useState(0);
+  const knownSignatures=useRef(new Set<string>());
+
+  useEffect(()=>{ const saved=localStorage.getItem("nexus-live-wallet"); if(saved)setAddress(saved); },[]);
+
+  const openPaperPosition=(event:LiveWalletEvent)=>{
+    if(!event.current || event.side!=="BUY") return;
+    setPaperPositions(current=>{
+      if(current.some(p=>p.signature===event.signature)) return current;
+      if(current.length>=settings.maxPositions) return current;
+      if(event.current!.liquidityUsd<settings.minLiquidity || event.current!.marketCapUsd<settings.minMarketCap) return current;
+      return [{
+        id:crypto.randomUUID(), signature:event.signature, wallet:address, mint:event.mint,
+        symbol:event.current!.symbol, openedAt:new Date().toISOString(),
+        copyPriceUsd:event.current!.priceUsd, currentPriceUsd:event.current!.priceUsd,
+        amountUsd:settings.amountPerTrade, liquidityUsd:event.current!.liquidityUsd,
+      },...current];
+    });
+  };
+
+  const load=async(isPoll=false)=>{
+    if(!address.trim()) { setError("追跡するSolanaウォレットアドレスを入力してください"); return; }
+    if(!isPoll)setLoading(true);
+    setError("");
+    try{
+      const response=await fetch(`/api/live/wallet?address=${encodeURIComponent(address.trim())}`,{cache:"no-store"});
+      const payload=await response.json() as LiveWalletResponse & {error?:string};
+      if(!response.ok)throw new Error(payload.error??"実データを取得できませんでした");
+      const previous=knownSignatures.current;
+      if(isPoll&&autoCopy){
+        payload.events.filter(event=>event.side==="BUY"&&!previous.has(event.signature)).forEach(openPaperPosition);
+      }
+      knownSignatures.current=new Set(payload.events.map(event=>event.signature));
+      setPaperPositions(current=>current.map(position=>{
+        const latest=payload.events.find(event=>event.mint===position.mint)?.current?.priceUsd;
+        return latest?{...position,currentPriceUsd:latest}:position;
+      }));
+      setData(payload);
+      localStorage.setItem("nexus-live-wallet",address.trim());
+    }catch(caught){setError(caught instanceof Error?caught.message:"実データを取得できませんでした");}
+    finally{if(!isPoll)setLoading(false);}
+  };
+
+  useEffect(()=>{
+    if(!monitoring||!address)return;
+    const timer=window.setInterval(()=>void load(true),15000);
+    return()=>window.clearInterval(timer);
+  });
+
+  const closePosition=(position:LivePaperPosition)=>{
+    const pnl=(position.currentPriceUsd-position.copyPriceUsd)/position.copyPriceUsd*position.amountUsd;
+    setRealizedPnl(value=>value+pnl);
+    setPaperPositions(current=>current.filter(item=>item.id!==position.id));
+  };
+
+  return <>
+    <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+      <div><div className="flex items-center gap-2"><h1 className="text-xl font-semibold">実データ・デモトレード</h1><Pill>LIVE DATA</Pill><Pill tone="amber">PAPER ONLY</Pill></div><p className="mt-1 text-sm text-[#819099]">実在ウォレットのオンチェーン取引を、実際のDEX価格で仮想コピー</p></div>
+      <div className="text-right text-xs text-[#819099]"><div>確定デモ損益</div><div className={`num mt-1 text-base font-semibold ${realizedPnl>=0?"text-[#2ee6a6]":"text-[#ff6b76]"}`}>{money(realizedPnl,true)}</div></div>
+    </div>
+    <Card className="mb-3">
+      <SectionTitle title="追跡ウォレット" note="公開されているSolanaアドレスのみ。秘密鍵は不要です。" action={data&&<Pill tone={data.source==="HELIUS_RPC"?"green":"gray"}>{data.source==="HELIUS_RPC"?"HELIUS":"PUBLIC RPC"}</Pill>}/>
+      <div className="p-5">
+        <div className="flex flex-col gap-3 md:flex-row">
+          <div className="flex-1"><Field label="コピー元ウォレットアドレス" value={address} onChange={setAddress} placeholder="例: 7xKX...（32〜44文字）"/></div>
+          <div className="flex items-end gap-2">
+            {publicKey&&<button onClick={()=>setAddress(publicKey.toBase58())} className="h-[42px] rounded-lg border border-[#344149] px-3 text-xs">接続中アドレスを使用</button>}
+            <button onClick={()=>void load(false)} disabled={loading} className="h-[42px] rounded-lg bg-[#2ee6a6] px-5 text-sm font-semibold text-[#07100d] disabled:opacity-50">{loading?"取得中…":"実データを取得"}</button>
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-5 border-t border-[#202a30] pt-4">
+          <div className="flex items-center gap-2 text-sm"><Toggle checked={monitoring} onChange={setMonitoring} label="15秒ごとに監視"/><span>15秒ごとに監視</span></div>
+          <div className="flex items-center gap-2 text-sm"><Toggle checked={autoCopy} onChange={setAutoCopy} label="新規購入を自動デモコピー"/><span>新規購入を自動デモコピー</span></div>
+          {data&&<span className="ml-auto text-xs text-[#65737a]">最終取得 {new Date(data.fetchedAt).toLocaleTimeString("ja-JP")}</span>}
+        </div>
+        {error&&<div className="mt-4 rounded-lg border border-[#5a2930] bg-[#29171b] p-3 text-sm text-[#ff8c94]">{error}</div>}
+      </div>
+    </Card>
+    <div className="grid gap-3 xl:grid-cols-[1.35fr_1fr]">
+      <Card>
+        <SectionTitle title="直近の実取引候補" note={data?`${data.events.length}件をオンチェーンから検出`:"ウォレットアドレスを入力して取得してください"}/>
+        {data?.events.length?<div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs">
+          <thead className="text-[#65737a]"><tr>{["時刻","区分","トークン","数量","元価格","現在価格","流動性",""].map(label=><th key={label} className="px-4 py-3 font-medium">{label}</th>)}</tr></thead>
+          <tbody>{data.events.map(event=><tr key={`${event.signature}-${event.mint}`} className="border-t border-[#202a30]">
+            <td className="px-4 py-3">{event.blockTime?new Date(event.blockTime*1000).toLocaleString("ja-JP"):"—"}</td>
+            <td className="px-4 py-3"><Pill tone={event.side==="BUY"?"green":"red"}>{event.side==="BUY"?"購入":"売却"}</Pill></td>
+            <td className="px-4 py-3"><div className="font-semibold">{event.current?.symbol??`${event.mint.slice(0,5)}…`}</div><div className="mt-1 max-w-28 truncate font-mono text-[9px] text-[#65737a]">{event.mint}</div></td>
+            <td className="num px-4 py-3">{event.tokenAmount.toLocaleString("en-US",{maximumFractionDigits:4})}</td>
+            <td className="num px-4 py-3">{event.sourcePriceUsd?`$${event.sourcePriceUsd.toPrecision(5)}`:"算出不可"}</td>
+            <td className="num px-4 py-3">{event.current?`$${event.current.priceUsd.toPrecision(5)}`:"価格なし"}</td>
+            <td className="num px-4 py-3">{event.current?money(event.current.liquidityUsd):"—"}</td>
+            <td className="px-4 py-3"><button disabled={event.side!=="BUY"||!event.current||paperPositions.some(p=>p.signature===event.signature)} onClick={()=>openPaperPosition(event)} className="rounded-md border border-[#344149] px-3 py-2 disabled:cursor-not-allowed disabled:opacity-30">現在価格でデモ購入</button></td>
+          </tr>)}</tbody>
+        </table></div>:<div className="p-10 text-center text-sm text-[#65737a]">{data?"直近の単純なスワップ候補は見つかりませんでした":"実データはまだ読み込まれていません"}</div>}
+      </Card>
+      <Card>
+        <SectionTitle title="ライブ・ペーパーポジション" note={`${paperPositions.length} / ${settings.maxPositions} 保有中`}/>
+        {paperPositions.length?<div className="divide-y divide-[#202a30]">{paperPositions.map(position=>{
+          const pnlPct=(position.currentPriceUsd-position.copyPriceUsd)/position.copyPriceUsd*100;
+          const pnlUsd=position.amountUsd*pnlPct/100;
+          return <div key={position.id} className="p-4"><div className="flex items-start justify-between"><div><div className="font-semibold">{position.symbol}</div><div className="mt-1 text-[10px] text-[#65737a]">{new Date(position.openedAt).toLocaleTimeString("ja-JP")} デモ約定</div></div><div className={`num text-right ${pnlUsd>=0?"text-[#2ee6a6]":"text-[#ff6b76]"}`}><div className="font-semibold">{money(pnlUsd,true)}</div><div className="text-xs">{pnlPct>=0?"+":""}{pnlPct.toFixed(2)}%</div></div></div><div className="mt-3 grid grid-cols-2 gap-2 text-xs text-[#819099]"><div>購入 <span className="num text-white">${position.copyPriceUsd.toPrecision(5)}</span></div><div>現在 <span className="num text-white">${position.currentPriceUsd.toPrecision(5)}</span></div><div>仮想額 <span className="num text-white">{money(position.amountUsd)}</span></div><button onClick={()=>closePosition(position)} className="text-right text-[#ff8c94]">手動決済</button></div></div>;
+        })}</div>:<div className="p-10 text-center text-sm text-[#65737a]">購入候補からデモ取引を開始できます</div>}
+      </Card>
+    </div>
+    {data&&<div className="mt-3 rounded-lg border border-[#3d3020] bg-[#211b13] p-4 text-xs leading-6 text-[#d8b77f]">{data.warnings.join(" ")}</div>}
+  </>;
+}
+
 export function TradingApp() {
-  const [view,setView]=useState<View>("dashboard"), [mobileOpen,setMobileOpen]=useState(false);
+  const [view,setView]=useState<View>("live"), [mobileOpen,setMobileOpen]=useState(false);
   const [wallets,setWallets]=useState(initialWallets), [selected,setSelected]=useState<Wallet|null>(null);
   const [favorites,setFavorites]=useState(initialFavorites), [settings,setSettings]=useState(defaultSettings);
   useEffect(()=>{ const saved=localStorage.getItem("nexus-settings"); if(saved) try{setSettings(JSON.parse(saved))}catch{} },[]);
@@ -222,12 +342,13 @@ export function TradingApp() {
     <aside className={`fixed inset-y-0 left-0 z-40 w-64 border-r border-[#202a30] bg-[#0b0f11]/95 backdrop-blur transition-transform lg:translate-x-0 ${mobileOpen?"translate-x-0":"-translate-x-full"}`}>
       <div className="flex h-16 items-center border-b border-[#202a30] px-5"><div className="mr-3 flex h-8 w-8 items-center justify-center rounded-lg bg-[#2ee6a6] font-black text-[#07100d]">N</div><div><div className="text-sm font-bold tracking-[.18em]">NEXUS</div><div className="text-[9px] tracking-widest text-[#65737a]">SMART WALLET</div></div></div>
       <nav className="p-3">{nav.map(n=><button key={n.id} onClick={()=>go(n.id)} className={`mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm transition ${view===n.id?"bg-[#18231f] text-[#2ee6a6]":"text-[#87959c] hover:bg-[#11181b] hover:text-white"}`}><span className="w-5 text-center text-base">{n.glyph}</span>{n.label}{n.id==="wallets"&&<span className="ml-auto rounded bg-[#24302d] px-1.5 py-0.5 text-[9px]">5</span>}</button>)}</nav>
-      <div className="absolute bottom-0 left-0 right-0 border-t border-[#202a30] p-4"><div className="mb-3 flex items-center justify-between text-xs"><span className="text-[#819099]">モード</span><Pill>MOCK</Pill></div><div className="rounded-lg bg-[#11181b] p-3"><div className="flex items-center gap-2 text-xs"><span className="h-2 w-2 rounded-full bg-[#2ee6a6]"/>Solana RPC 接続中</div><div className="mt-1.5 text-[10px] text-[#65737a]">最終同期 3秒前</div></div></div>
+      <div className="absolute bottom-0 left-0 right-0 border-t border-[#202a30] p-4"><div className="mb-3 flex items-center justify-between text-xs"><span className="text-[#819099]">売買モード</span><Pill tone="amber">PAPER ONLY</Pill></div><div className="rounded-lg bg-[#11181b] p-3"><div className="flex items-center gap-2 text-xs"><span className="h-2 w-2 rounded-full bg-[#2ee6a6]"/>Solana Mainnet</div><div className="mt-1.5 text-[10px] text-[#65737a]">実データ / 実売買なし</div></div></div>
     </aside>
     {mobileOpen&&<button aria-label="メニューを閉じる" onClick={()=>setMobileOpen(false)} className="fixed inset-0 z-30 bg-black/60 lg:hidden"/>}
     <div className="lg:pl-64">
       <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-[#202a30] bg-[#080b0d]/85 px-4 backdrop-blur md:px-6"><div className="flex items-center gap-3"><button onClick={()=>setMobileOpen(true)} className="rounded border border-[#29343a] px-2 py-1 lg:hidden">☰</button><span className="text-sm font-medium">{title}</span></div><div className="flex items-center gap-3"><span className="hidden text-xs text-[#65737a] sm:block">Paper Balance</span><span className="num text-sm font-semibold">$12,180.42</span><WalletMultiButton /></div></header>
       <main className="mx-auto max-w-[1500px] p-4 md:p-6">
+        {view==="live"&&<LiveDemo settings={settings}/>}
         {view==="dashboard"&&<Dashboard onView={go}/>}
         {view==="wallets"&&<Wallets data={wallets} setData={setWallets} selected={selected} setSelected={setSelected}/>}
         {view==="favorites"&&<Favorites items={favorites} setItems={setFavorites}/>}
