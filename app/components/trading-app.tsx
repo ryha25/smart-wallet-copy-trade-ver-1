@@ -1013,7 +1013,14 @@ export function TradingApp() {
         <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-white/[0.07] bg-[#080c0e]/85 px-4 backdrop-blur-xl md:px-6">
           <div className="flex items-center gap-3">
             <button onClick={() => setMobileOpen(true)} className="rounded-lg border border-white/10 p-2 lg:hidden"><Menu size={17} /></button>
-            <span className="text-sm font-medium">{currentTitle}</span>
+            <div className="flex items-center gap-2 lg:hidden">
+              <img src="/next-trade-icon.png" alt="" className="h-8 w-8 rounded-lg object-contain" />
+              <div>
+                <p className="text-xs font-bold tracking-[.1em] text-white">NEXT-TRADE</p>
+                <p className="text-[9px] text-[#64747a]">{currentTitle}</p>
+              </div>
+            </div>
+            <span className="hidden text-sm font-medium lg:inline">{currentTitle}</span>
           </div>
           <div className="flex items-center gap-3">
             <div className="hidden text-right sm:block"><p className="text-[10px] text-[#64747a]">仮想残高</p><p className="text-sm font-semibold tabular-nums">{money(paperBalance)}</p></div>
