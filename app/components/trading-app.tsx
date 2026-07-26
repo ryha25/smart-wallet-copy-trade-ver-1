@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import {
   Activity,
-  Bot,
   CircleDollarSign,
   Gauge,
   Menu,
@@ -987,8 +986,8 @@ export function TradingApp() {
     <div className="min-h-screen">
       <aside className={`fixed inset-y-0 left-0 z-40 w-64 border-r border-white/[0.07] bg-[#090d0f]/95 backdrop-blur-xl transition-transform lg:translate-x-0 ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>
         <div className="flex h-16 items-center border-b border-white/[0.07] px-5">
-          <div className="mr-3 flex h-9 w-9 items-center justify-center rounded-xl bg-[#38e7ae] text-[#06110d]"><Bot size={19} strokeWidth={2.5} /></div>
-          <div><p className="text-sm font-bold tracking-[.16em]">NEXUS</p><p className="text-[9px] tracking-[.2em] text-[#5f7077]">SMART WALLET</p></div>
+          <img src="/next-trade-icon.png" alt="NEXT-TRADE" className="mr-3 h-10 w-10 rounded-xl object-contain" />
+          <div><p className="text-sm font-bold tracking-[.12em]">NEXT-TRADE</p><p className="text-[9px] tracking-[.18em] text-[#5f7077]">SMART WALLET COPY</p></div>
         </div>
         <nav className="p-3">
           {nav.map(item => {

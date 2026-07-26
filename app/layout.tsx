@@ -3,8 +3,14 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-  title: "NEXUS — Smart Wallet Copy Trade",
+  title: "NEXT-TRADE",
   description: "Solanaの実ウォレットを分析し、仮想資金でコピー取引を検証する日本語ダッシュボード",
+  applicationName: "NEXT-TRADE",
+  manifest: "/site.webmanifest",
+  icons: {
+    icon: "/icon-192.png",
+    apple: "/apple-touch-icon.png",
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

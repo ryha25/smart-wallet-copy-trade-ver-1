@@ -1,4 +1,4 @@
-# Smart Wallet Copy Trade — MVP
+# NEXT-TRADE — Smart Wallet Copy Trade MVP
 
 Solana上の実在ウォレットと実市場データを分析し、コピー取引を仮想資金で検証する日本語Webアプリです。実資金の注文は送信しません。
 
