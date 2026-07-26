@@ -1,70 +1,82 @@
 # Smart Wallet Copy Trade — MVP
 
-Solana上の高収益ウォレットを分析し、対象を選択してコピー戦略をペーパートレードで検証する日本語Webアプリです。実資金を動かす処理、秘密鍵・シードフレーズの保存処理は含みません。
+Solana上の実在ウォレットと実市場データを分析し、コピー取引を仮想資金で検証する日本語Webアプリです。実資金の注文は送信しません。
 
-## 実装済み
+## 実装済み機能
 
-- 運用ダッシュボード（残高、損益、勝率、保有、直近取引）
-- 優秀ウォレットランキングと100点評価、コピーON/OFF
-- ウォレット詳細（確定・未確定損益、評価内訳、推移、履歴）
-- お気に入りコイン登録・削除と関連ウォレット表示
-- コピー条件・資金管理・決済設定（ブラウザ保存）
-- ペーパーポジションと手動決済
-- 約定・決済・見送りを含む取引履歴
-- モックデータモード
-- PostgreSQL用Prismaスキーマ、初期マイグレーション、シード
-- Helius / Birdeye / Jupiter接続を差し替えるサービス境界
-- Solana Wallet Adapterプロバイダー（閲覧アドレス接続用）
-- 実在ウォレットの直近オンチェーン取引候補を取得するライブモード
-- DEX Screenerの実価格・流動性・時価総額によるライブ・ペーパートレード
-- 15秒ポーリングによる新規購入候補の自動デモコピー
+- 手動コピー元ウォレットを最大10件登録
+- Jupiterの直近実取引から優秀ウォレット候補を抽出し、自動枠へ最大5件採用
+- 30日ROI、確定利益、勝率、売買回数、ウォレット経過日数、最大ドローダウン、利益継続性を実履歴から集計
+- 登録ウォレットを15秒間隔で監視
+- 新規購入検知時にJupiterの実見積もりを確認し、仮想資金でペーパートレード
+- コピー元売却、利確、損切り、手動決済
+- 見送った実シグナルと理由を端末内に保存
+- CAだけでお気に入りコインを登録し、名称・シンボル・価格・流動性・時価総額を自動取得
+- お気に入りコインを開くと、そのCAで確定利益がある実ウォレットを最大5件表示
+- お気に入り候補を手動コピー元へ登録
+- CAを1タップでコピー
+- RugCheck、Mint権限、Freeze権限による危険トークン除外
+- 開発者権限との一致、高頻度BOT、異常勝率、利益集中などの疑わしいウォレットを除外
+- Solana Wallet Adapterによるユーザーウォレット接続
+- PC・スマートフォン対応のダークテーマ
 
-## 必要環境
+架空ウォレット、架空売買、架空収益のシードデータはありません。初回表示は空で、実APIから取得したデータだけが追加されます。仮想なのはペーパートレードの開始残高と取引資金だけです。
 
-- Node.js 22.13以上
-- PostgreSQL 15以上（DB機能を使う場合のみ）
-- npm または pnpm
+## データソース
 
-## 起動
+- Helius: ウォレット履歴、初回取引日、Jupiter取引候補
+- Birdeye: SOLの過去価格
+- Jupiter: ペーパートレード時点の交換経路と見積もり
+- DEX Screener: トークン情報、現在価格、流動性、時価総額
+- RugCheck: ラグプル関連リスク
+- Solana RPC: Mint権限、Freeze権限
+
+## 起動方法
+
+Node.js 22.13以降が必要です。
 
 ```bash
-cp .env.example .env
 npm install
+cp .env.example .env.local
 npm run dev
 ```
 
-表示されたローカルURLをブラウザで開いてください。`NEXT_PUBLIC_MOCK_MODE=true` のままなら、PostgreSQLや外部APIキーなしで全画面を操作できます。
+画面に表示されたローカルURLをブラウザで開いてください。
+
+## 環境変数
+
+```env
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/smart_wallet?schema=public"
+NEXT_PUBLIC_SOLANA_RPC_URL="https://api.mainnet-beta.solana.com"
+SOLANA_RPC_URL="https://api.mainnet-beta.solana.com"
+HELIUS_API_KEY=""
+BIRDEYE_API_KEY=""
+JUPITER_API_KEY=""
+```
+
+`HELIUS_API_KEY`、`BIRDEYE_API_KEY`、`JUPITER_API_KEY`を設定してください。`.env.local`はGit管理対象外です。秘密鍵やシードフレーズは設定しないでください。
 
 ## データベース
 
-PostgreSQLを起動し、`.env` の `DATABASE_URL` を設定した後に実行します。
+Prismaスキーマと初期マイグレーションを含みます。
 
 ```bash
 npx prisma generate
 npx prisma migrate dev
-npm run db:seed
 ```
 
-主なテーブルは `users`、`tracked_wallets`、`wallet_statistics`、`wallet_scores`、`wallet_trades`、`wallet_holdings`、`favorite_tokens`、`favorite_token_wallets`、`copy_settings`、`paper_positions`、`paper_trades`、`skipped_trades`、`token_risk_checks`、`system_logs` です。金額・損益はUSD建てとSOL建てを保持できます。
+架空データを防ぐため、`npm run db:seed`はサンプルウォレットを投入しません。
 
-## 環境変数
+## スキャン範囲と注意
 
-| 変数 | 必須 | 用途 |
-| --- | --- | --- |
-| `DATABASE_URL` | DB利用時 | PostgreSQL接続文字列 |
-| `NEXT_PUBLIC_MOCK_MODE` | いいえ | `true`でモックデータを使用 |
-| `NEXT_PUBLIC_SOLANA_RPC_URL` | いいえ | Solana RPC |
-| `SOLANA_RPC_URL` | いいえ | サーバー側Solana RPC。未設定時は公開RPC |
-| `HELIUS_API_KEY` | 推奨 | 設定時はHelius Mainnet RPCへ自動切替 |
-| `BIRDEYE_API_KEY` | 実データ接続時 | 価格・流動性・時価総額 |
-| `JUPITER_API_KEY` | 将来 | 見積・実売買連携 |
+MVPの自動スキャンは、直近80件のJupiter v6成功取引から最大10ウォレットを抽出し、各ウォレットの30日履歴を評価します。Solanaチェーン全履歴を常時完全走査するものではありません。
 
-## 安全性
+危険判定はリスク低減のためのフィルターであり、安全性や将来利益を保証しません。RugCheckの判定を取得できない場合も安全扱いせず、コピーを見送ります。
 
-このバージョンはペーパートレード専用です。実売買へ移行する際も秘密鍵をDBへ保存せず、ユーザー署名または専用の安全な署名基盤を別モジュールとして追加してください。
+## 検証
 
-## 実データ・デモトレード
-
-「実データ・デモ」画面で公開されているSolanaウォレットアドレスを入力します。アプリはSolana RPCから直近トランザクションを取得し、ウォレット所有トークンの残高差分から単純なスワップ候補を抽出します。価格、流動性、時価総額はDEX Screenerの現在データを利用します。
-
-過去約定価格はUSDC・USDT・SOLとの単純な交換から推定するため、複雑なルート、送金、流動性操作などは対象外または誤判定になることがあります。自動コピーを有効にした場合も作成されるのは仮想ポジションのみです。
+```bash
+npm run typecheck
+npm test
+npm run build
+```

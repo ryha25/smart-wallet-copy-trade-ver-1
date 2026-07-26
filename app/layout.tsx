@@ -4,7 +4,7 @@ import { Providers } from "./providers";
 
 export const metadata: Metadata = {
   title: "NEXUS — Smart Wallet Copy Trade",
-  description: "Solana高収益ウォレットを分析し、ペーパートレードでコピー戦略を検証するダッシュボード",
+  description: "Solanaの実ウォレットを分析し、仮想資金でコピー取引を検証する日本語ダッシュボード",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
