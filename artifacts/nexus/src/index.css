@@ -1,0 +1,33 @@
+@import 'tailwindcss';
+
+/* ===== NEXUS Dark Theme ===== */
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html { background: #080b0d; }
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 80% -10%, rgba(46,230,166,.08), transparent 30rem),
+    #080b0d;
+  color: #edf4f1;
+  font-family: Inter, "Noto Sans JP", system-ui, sans-serif;
+}
+button, input, select { font: inherit; }
+button { cursor: pointer; }
+::selection { background: rgba(46,230,166,.3); }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+.num { font-variant-numeric: tabular-nums; }
+@keyframes pulse-line { 0%,100%{opacity:.45} 50%{opacity:1} }
+.live-dot { animation: pulse-line 1.8s ease-in-out infinite; }
+.wallet-adapter-button {
+  height: 34px !important;
+  border: 1px solid #2d3a40 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  padding: 0 12px !important;
+  font-size: 12px !important;
+}
+.wallet-adapter-button:hover {
+  border-color: #2ee6a6 !important;
+  background: #11181b !important;
+}

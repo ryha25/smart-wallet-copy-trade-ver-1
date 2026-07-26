@@ -1,0 +1,1039 @@
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import {
+  Activity,
+  CircleDollarSign,
+  Gauge,
+  Menu,
+  Radar,
+  RefreshCw,
+  Settings as SettingsIcon,
+  ShieldCheck,
+  Trash2,
+  WalletCards,
+  X,
+} from "lucide-react";
+import { defaultSettings } from "../lib/default-settings";
+import { calculatePaperPnl, evaluateCopySignal } from "../lib/paper-trading";
+import type {
+  LivePaperPosition,
+  FavoriteToken,
+  FavoriteWalletScanResponse,
+  LiveWalletEvent,
+  LiveWalletResponse,
+  SkippedPaperTrade,
+  TrackedWallet,
+  WalletScanResponse,
+  WalletScore,
+} from "../lib/live-types";
+import type { CopySettings } from "../lib/types";
+
+type View = "dashboard" | "sources" | "scanner" | "favorites" | "activity" | "settings";
+type ActivityByWallet = Record<string, LiveWalletResponse>;
+
+const ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const INITIAL_PAPER_BALANCE = 10000;
+const STORAGE = {
+  wallets: "swt-v2-wallets",
+  positions: "swt-v2-positions",
+  skipped: "swt-v2-skipped",
+  settings: "swt-v2-settings",
+  processed: "swt-v2-processed",
+  favorites: "swt-v2-favorites",
+};
+
+const nav: Array<{ id: View; label: string; icon: typeof Gauge }> = [
+  { id: "dashboard", label: "ダッシュボード", icon: Gauge },
+  { id: "sources", label: "コピー元ウォレット", icon: WalletCards },
+  { id: "scanner", label: "優秀ウォレットスキャン", icon: Radar },
+  { id: "favorites", label: "お気に入りコイン", icon: CircleDollarSign },
+  { id: "activity", label: "実取引・ペーパー履歴", icon: Activity },
+  { id: "settings", label: "コピー設定", icon: SettingsIcon },
+];
+
+const money = (value: number, signed = false) =>
+  `${signed && value >= 0 ? "+" : value < 0 ? "-" : ""}$${Math.abs(value).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
+const pct = (value: number) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+const shortAddress = (address: string) => `${address.slice(0, 5)}…${address.slice(-5)}`;
+
+function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <section className={`rounded-2xl border border-white/[0.07] bg-[#101619] ${className}`}>{children}</section>;
+}
+
+function SectionHeader({
+  title,
+  note,
+  action,
+}: {
+  title: string;
+  note?: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/[0.07] px-5 py-4">
+      <div>
+        <h2 className="text-sm font-semibold text-white">{title}</h2>
+        {note && <p className="mt-1 text-xs leading-5 text-[#7f9097]">{note}</p>}
+      </div>
+      {action}
+    </div>
+  );
+}
+
+function Badge({
+  children,
+  tone = "green",
+}: {
+  children: React.ReactNode;
+  tone?: "green" | "red" | "amber" | "gray";
+}) {
+  const tones = {
+    green: "border-emerald-400/20 bg-emerald-400/10 text-emerald-300",
+    red: "border-rose-400/20 bg-rose-400/10 text-rose-300",
+    amber: "border-amber-400/20 bg-amber-400/10 text-amber-300",
+    gray: "border-white/10 bg-white/5 text-[#9ba9ae]",
+  };
+  return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-medium ${tones[tone]}`}>{children}</span>;
+}
+
+function Metric({
+  label,
+  value,
+  detail,
+  accent = false,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  accent?: boolean;
+}) {
+  return (
+    <Card className="p-4">
+      <p className="text-xs text-[#7f9097]">{label}</p>
+      <p className={`mt-3 text-2xl font-semibold tabular-nums ${accent ? "text-[#38e7ae]" : "text-white"}`}>{value}</p>
+      {detail && <p className="mt-2 text-[11px] text-[#66767c]">{detail}</p>}
+    </Card>
+  );
+}
+
+function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (value: boolean) => void; label: string }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative h-6 w-11 rounded-full border transition ${checked ? "border-[#38e7ae] bg-[#167456]" : "border-[#39474c] bg-[#20292d]"}`}
+    >
+      <span className={`absolute top-0.5 h-[18px] w-[18px] rounded-full bg-white transition ${checked ? "left-[21px]" : "left-0.5"}`} />
+    </button>
+  );
+}
+
+function EmptyState({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="flex min-h-48 flex-col items-center justify-center px-6 py-12 text-center">
+      <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/[0.03]">
+        <Activity size={18} className="text-[#5d6e75]" />
+      </div>
+      <p className="text-sm font-medium text-[#c4ced1]">{title}</p>
+      <p className="mt-2 max-w-md text-xs leading-6 text-[#66767c]">{detail}</p>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  type = "text",
+  suffix,
+  placeholder,
+}: {
+  label: string;
+  value: string | number;
+  onChange: (value: string | number) => void;
+  type?: "text" | "number";
+  suffix?: string;
+  placeholder?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-2 block text-xs text-[#8a999f]">{label}</span>
+      <div className="flex items-center rounded-xl border border-white/10 bg-[#090d0f] focus-within:border-[#38e7ae]">
+        <input
+          type={type}
+          value={value}
+          placeholder={placeholder}
+          onChange={event => onChange(type === "number" ? Number(event.target.value) : event.target.value)}
+          className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm text-white outline-none placeholder:text-[#455158]"
+        />
+        {suffix && <span className="pr-3 text-xs text-[#65747a]">{suffix}</span>}
+      </div>
+    </label>
+  );
+}
+
+function ScorePanel({ score }: { score: WalletScore }) {
+  return (
+    <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+      <div><span className="text-[#718188]">スコア</span><p className="mt-1 text-lg font-semibold text-white">{score.score}<span className="text-xs text-[#718188]"> / 100</span></p></div>
+      <div><span className="text-[#718188]">30日ROI</span><p className={`mt-1 text-lg font-semibold ${score.roi30d >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>{pct(score.roi30d)}</p></div>
+      <div><span className="text-[#718188]">確定利益</span><p className="mt-1 text-lg font-semibold text-white">{money(score.realizedProfitUsd, true)}</p></div>
+      <div><span className="text-[#718188]">勝率</span><p className="mt-1 text-lg font-semibold text-white">{score.winRate.toFixed(1)}%</p></div>
+    </div>
+  );
+}
+
+function Dashboard({
+  wallets,
+  positions,
+  activities,
+  skipped,
+  lastRefresh,
+}: {
+  wallets: TrackedWallet[];
+  positions: LivePaperPosition[];
+  activities: ActivityByWallet;
+  skipped: SkippedPaperTrade[];
+  lastRefresh: string | null;
+}) {
+  const open = positions.filter(position => position.status === "OPEN");
+  const closed = positions.filter(position => position.status === "CLOSED" && position.exitPriceUsd);
+  const realized = closed.reduce((sum, position) =>
+    sum + calculatePaperPnl(position.copyPriceUsd, position.exitPriceUsd ?? position.copyPriceUsd, position.amountUsd).pnlUsd, 0);
+  const unrealized = open.reduce((sum, position) =>
+    sum + calculatePaperPnl(position.copyPriceUsd, position.currentPriceUsd, position.amountUsd).pnlUsd, 0);
+  const wins = closed.filter(position => (position.exitPriceUsd ?? 0) > position.copyPriceUsd).length;
+  const recentEvents = Object.values(activities)
+    .flatMap(activity => activity.events.map(event => ({ ...event, wallet: activity.address })))
+    .sort((a, b) => b.blockTime - a.blockTime)
+    .slice(0, 6);
+
+  return (
+    <>
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">リアルデータ運用状況</h1>
+          <p className="mt-1 text-sm text-[#7f9097]">市場・ウォレットは実データ、運用資金だけが仮想です。</p>
+        </div>
+        <Badge tone={lastRefresh ? "green" : "gray"}>{lastRefresh ? `最終更新 ${new Date(lastRefresh).toLocaleTimeString("ja-JP")}` : "未取得"}</Badge>
+      </div>
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <Metric label="監視中コピー元" value={`${wallets.filter(wallet => wallet.enabled).length} / 15`} detail={`手動 ${wallets.filter(w => w.origin === "MANUAL").length}/10・自動 ${wallets.filter(w => w.origin === "AUTO").length}/5`} />
+        <Metric label="ペーパートレード残高" value={money(INITIAL_PAPER_BALANCE + realized + unrealized)} detail="開始残高 $10,000（仮想資金）" accent />
+        <Metric label="確定損益" value={money(realized, true)} detail={`${closed.length}件決済`} accent={realized >= 0} />
+        <Metric label="勝率" value={closed.length ? `${(wins / closed.length * 100).toFixed(1)}%` : "—"} detail="決済済みペーパートレードのみ" />
+      </div>
+      <div className="mt-3 grid gap-3 xl:grid-cols-[1fr_1.25fr]">
+        <Card>
+          <SectionHeader title="現在保有中" note={`${open.length}ポジション・含み損益 ${money(unrealized, true)}`} />
+          {open.length ? (
+            <div className="divide-y divide-white/[0.07]">
+              {open.map(position => {
+                const pnl = calculatePaperPnl(position.copyPriceUsd, position.currentPriceUsd, position.amountUsd);
+                return (
+                  <div key={position.id} className="flex items-center gap-3 px-5 py-4">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#172227] text-xs font-bold text-[#38e7ae]">{position.symbol[0]}</div>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-semibold">{position.symbol}</p>
+                      <p className="truncate font-mono text-[10px] text-[#66767c]">{shortAddress(position.wallet)}</p>
+                    </div>
+                    <div className={`text-right tabular-nums ${pnl.pnlUsd >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>
+                      <p className="text-sm font-semibold">{money(pnl.pnlUsd, true)}</p>
+                      <p className="text-xs">{pct(pnl.pnlPct)}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : <EmptyState title="保有中の仮想ポジションはありません" detail="監視開始後にコピー元の新規購入を検知し、条件を通過するとここへ表示されます。" />}
+        </Card>
+        <Card>
+          <SectionHeader title="直近の実ウォレット取引" note="登録したコピー元のオンチェーン売買" />
+          {recentEvents.length ? (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[620px] text-left text-xs">
+                <thead className="text-[#66767c]"><tr>{["時刻", "売買", "コイン", "コピー元", "取引価格", "現在価格"].map(item => <th key={item} className="px-4 py-3 font-medium">{item}</th>)}</tr></thead>
+                <tbody>{recentEvents.map(event => (
+                  <tr key={`${event.signature}-${event.mint}`} className="border-t border-white/[0.07]">
+                    <td className="px-4 py-3">{event.blockTime ? new Date(event.blockTime * 1000).toLocaleString("ja-JP") : "—"}</td>
+                    <td className="px-4 py-3"><Badge tone={event.side === "BUY" ? "green" : "red"}>{event.side === "BUY" ? "購入" : "売却"}</Badge></td>
+                    <td className="px-4 py-3 font-semibold">{event.current?.symbol ?? shortAddress(event.mint)}</td>
+                    <td className="px-4 py-3 font-mono">{shortAddress(event.wallet)}</td>
+                    <td className="px-4 py-3 tabular-nums">{event.sourcePriceUsd ? `$${event.sourcePriceUsd.toPrecision(5)}` : "算定不可"}</td>
+                    <td className="px-4 py-3 tabular-nums">{event.current ? `$${event.current.priceUsd.toPrecision(5)}` : "取得不可"}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          ) : <EmptyState title="実取引データはまだありません" detail="コピー元を登録し、「全件を今すぐ更新」を実行すると実データが表示されます。" />}
+        </Card>
+      </div>
+      {skipped.length > 0 && <p className="mt-3 text-right text-xs text-[#718188]">見送り記録 {skipped.length}件</p>}
+    </>
+  );
+}
+
+function Sources({
+  wallets,
+  activities,
+  busy,
+  onAdd,
+  onDelete,
+  onToggle,
+  onRefresh,
+  onRefreshAll,
+}: {
+  wallets: TrackedWallet[];
+  activities: ActivityByWallet;
+  busy: string | null;
+  onAdd: (address: string, label: string) => string | null;
+  onDelete: (address: string) => void;
+  onToggle: (address: string, enabled: boolean) => void;
+  onRefresh: (wallet: TrackedWallet, analyze?: boolean) => Promise<void>;
+  onRefreshAll: () => Promise<void>;
+}) {
+  const [address, setAddress] = useState("");
+  const [label, setLabel] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+  const manualCount = wallets.filter(wallet => wallet.origin === "MANUAL").length;
+  const autoCount = wallets.filter(wallet => wallet.origin === "AUTO").length;
+  const submit = () => {
+    const error = onAdd(address.trim(), label.trim());
+    setMessage(error ?? "コピー元を登録しました");
+    if (!error) {
+      setAddress("");
+      setLabel("");
+    }
+  };
+  return (
+    <>
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">コピー元ウォレット</h1>
+          <p className="mt-1 text-sm text-[#7f9097]">自分の接続ウォレットとは別に、コピーする実在アドレスを管理します。</p>
+        </div>
+        <button onClick={() => void onRefreshAll()} disabled={Boolean(busy) || wallets.length === 0} className="flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm text-[#d4dcde] transition hover:border-[#38e7ae] disabled:opacity-40">
+          <RefreshCw size={15} className={busy ? "animate-spin" : ""} /> 全件を今すぐ更新
+        </button>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-[360px_1fr]">
+        <Card className="h-fit p-5">
+          <div className="mb-5 flex items-center justify-between">
+            <div><p className="text-sm font-semibold">手動登録</p><p className="mt-1 text-xs text-[#718188]">最大10件</p></div>
+            <Badge tone={manualCount >= 10 ? "amber" : "green"}>{manualCount} / 10</Badge>
+          </div>
+          <div className="space-y-4">
+            <Field label="表示名（任意）" value={label} onChange={value => setLabel(String(value))} placeholder="例：確認済みウォレット" />
+            <Field label="Solanaウォレットアドレス" value={address} onChange={value => setAddress(String(value))} placeholder="32〜44文字の公開アドレス" />
+            <button onClick={submit} disabled={manualCount >= 10} className="w-full rounded-xl bg-[#38e7ae] px-4 py-3 text-sm font-semibold text-[#06110d] disabled:cursor-not-allowed disabled:opacity-40">コピー元に登録</button>
+            {message && <p className={`text-xs leading-5 ${message.includes("登録しました") ? "text-emerald-300" : "text-amber-300"}`}>{message}</p>}
+          </div>
+          <div className="mt-5 rounded-xl border border-amber-400/15 bg-amber-400/[0.06] p-3 text-xs leading-5 text-amber-200/80">
+            公開アドレスだけを登録します。秘密鍵やシードフレーズは入力・保存しません。
+          </div>
+        </Card>
+        <Card>
+          <SectionHeader title="監視対象" note={`手動 ${manualCount}/10・自動採用 ${autoCount}/5・15秒間隔で実取引を確認`} />
+          {wallets.length ? (
+            <div className="divide-y divide-white/[0.07]">
+              {wallets.map(wallet => {
+                const activity = activities[wallet.address];
+                return (
+                  <div key={wallet.address} className="p-5">
+                    <div className="flex flex-wrap items-start gap-4">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="font-semibold">{wallet.label || shortAddress(wallet.address)}</h3>
+                          <Badge tone={wallet.origin === "MANUAL" ? "gray" : "green"}>{wallet.origin === "MANUAL" ? "手動" : "自動採用"}</Badge>
+                          {wallet.score && <Badge tone={wallet.score.qualified ? "green" : "amber"}>{wallet.score.score}点</Badge>}
+                        </div>
+                        <p className="mt-2 break-all font-mono text-[11px] text-[#718188]">{wallet.address}</p>
+                        <p className="mt-2 text-[11px] text-[#59686e]">{activity ? `実取引 ${activity.events.length}件・${new Date(activity.fetchedAt).toLocaleString("ja-JP")}` : "実データ未取得"}</p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Toggle checked={wallet.enabled} onChange={value => onToggle(wallet.address, value)} label={`${wallet.label}の監視`} />
+                        <button title="更新と30日評価" onClick={() => void onRefresh(wallet, true)} disabled={busy === wallet.address} className="rounded-lg border border-white/10 p-2 text-[#89989e] hover:border-[#38e7ae] hover:text-[#38e7ae] disabled:opacity-40"><RefreshCw size={15} className={busy === wallet.address ? "animate-spin" : ""} /></button>
+                        <button title="削除" onClick={() => onDelete(wallet.address)} className="rounded-lg border border-white/10 p-2 text-[#89989e] hover:border-rose-400/50 hover:text-rose-300"><Trash2 size={15} /></button>
+                      </div>
+                    </div>
+                    {wallet.score && <div className="mt-5 border-t border-white/[0.06] pt-4"><ScorePanel score={wallet.score} /></div>}
+                  </div>
+                );
+              })}
+            </div>
+          ) : <EmptyState title="コピー元が登録されていません" detail="左のフォームから実在アドレスを登録するか、優秀ウォレットスキャンを実行してください。" />}
+        </Card>
+      </div>
+    </>
+  );
+}
+
+function Scanner({
+  result,
+  scanning,
+  autoCount,
+  onScan,
+}: {
+  result: WalletScanResponse | null;
+  scanning: boolean;
+  autoCount: number;
+  onScan: () => Promise<void>;
+}) {
+  return (
+    <>
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">優秀ウォレットスキャン</h1>
+          <p className="mt-1 text-sm text-[#7f9097]">直近のJupiter実取引から候補を発見し、30日確定損益で評価します。</p>
+        </div>
+        <button onClick={() => void onScan()} disabled={scanning} className="flex items-center gap-2 rounded-xl bg-[#38e7ae] px-5 py-3 text-sm font-semibold text-[#06110d] disabled:opacity-50">
+          <Radar size={16} className={scanning ? "animate-spin" : ""} /> {scanning ? "実データを分析中…" : "今すぐスキャン"}
+        </button>
+      </div>
+      <div className="mb-3 grid gap-3 sm:grid-cols-3">
+        <Metric label="自動採用枠" value={`${autoCount} / 5`} detail="条件通過ウォレットのみ" />
+        <Metric label="今回の候補評価数" value={result ? String(result.scannedCandidates) : "—"} detail="架空データでの補充なし" />
+        <Metric label="今回の合格数" value={result ? String(result.qualified.length) : "—"} detail="合格が0件の場合もあります" accent={Boolean(result?.qualified.length)} />
+      </div>
+      <Card>
+        <SectionHeader
+          title="実データ評価結果"
+          note={result?.scope ?? "スキャンを実行すると、評価対象と採用・不採用理由を表示します。"}
+          action={result && <Badge tone="gray">{new Date(result.fetchedAt).toLocaleString("ja-JP")}</Badge>}
+        />
+        {scanning ? (
+          <div className="flex min-h-64 flex-col items-center justify-center">
+            <RefreshCw className="animate-spin text-[#38e7ae]" />
+            <p className="mt-4 text-sm text-[#a2afb4]">候補抽出と30日履歴の集計を行っています</p>
+            <p className="mt-2 text-xs text-[#617076]">複数ウォレットを実APIで確認するため、少し時間がかかります。</p>
+          </div>
+        ) : result?.evaluated.length ? (
+          <div className="divide-y divide-white/[0.07]">
+            {result.evaluated.map((wallet, index) => (
+              <div key={wallet.address} className="p-5">
+                <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-[#59696f]">#{index + 1}</span>
+                      <p className="font-mono text-xs text-[#cbd4d7]">{wallet.address}</p>
+                    </div>
+                    <p className="mt-2 text-[11px] text-[#617076]">30日売買 {wallet.swaps30d}件・決済 {wallet.closedTrades}件・経過 {wallet.ageDays}日・価格算定 {wallet.valuedEvents}件</p>
+                  </div>
+                  <Badge tone={wallet.qualified ? "green" : "amber"}>{wallet.qualified ? "採用条件を通過" : "条件未達"}</Badge>
+                </div>
+                <ScorePanel score={wallet} />
+                {!wallet.qualified && <div className="mt-4 flex flex-wrap gap-2">{wallet.reasons.map(reason => <Badge key={reason} tone="gray">{reason}</Badge>)}</div>}
+              </div>
+            ))}
+          </div>
+        ) : <EmptyState title="まだスキャン結果がありません" detail="実行すると合格ウォレットを自動枠へ追加します。合格数が5件未満でも架空アドレスは追加しません。" />}
+      </Card>
+      <div className="mt-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-4 text-xs leading-6 text-amber-100/70">
+        MVPのスキャン範囲はSolana全履歴の完全走査ではありません。直近80件のJupiter v6成功取引から最大10候補を抽出し、各候補の30日履歴を評価します。開発者関連・自己売買などの高度なクラスタ分析は今後拡張します。
+      </div>
+    </>
+  );
+}
+
+function FavoritesView({
+  favorites,
+  activities,
+  onAdd,
+  onDelete,
+  onAddManual,
+}: {
+  favorites: FavoriteToken[];
+  activities: ActivityByWallet;
+  onAdd: (mint: string) => Promise<string | null>;
+  onDelete: (mint: string) => void;
+  onAddManual: (address: string, label: string) => string | null;
+}) {
+  const [mint, setMint] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [openedMint, setOpenedMint] = useState<string | null>(null);
+  const [walletResults, setWalletResults] = useState<Record<string, FavoriteWalletScanResponse>>({});
+  const [loadingMint, setLoadingMint] = useState<string | null>(null);
+  const [copiedMint, setCopiedMint] = useState<string | null>(null);
+  const submit = async () => {
+    setAdding(true);
+    setMessage(null);
+    const result = await onAdd(mint.trim());
+    setMessage(result ?? "実データから登録しました");
+    if (!result) setMint("");
+    setAdding(false);
+  };
+  const openToken = async (tokenMint: string) => {
+    if (openedMint === tokenMint) {
+      setOpenedMint(null);
+      return;
+    }
+    setOpenedMint(tokenMint);
+    if (walletResults[tokenMint]) return;
+    setLoadingMint(tokenMint);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/live/token-wallets?mint=${encodeURIComponent(tokenMint)}`, { cache: "no-store" });
+      const payload = await response.json() as FavoriteWalletScanResponse & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "ウォレット分析に失敗しました");
+      setWalletResults(current => ({ ...current, [tokenMint]: payload }));
+    } catch (scanError) {
+      setMessage(scanError instanceof Error ? scanError.message : "ウォレット分析に失敗しました");
+    } finally {
+      setLoadingMint(null);
+    }
+  };
+  const copyCa = async (tokenMint: string) => {
+    try {
+      await navigator.clipboard.writeText(tokenMint);
+      setCopiedMint(tokenMint);
+      window.setTimeout(() => setCopiedMint(current => current === tokenMint ? null : current), 1800);
+    } catch {
+      setMessage("CAをコピーできませんでした");
+    }
+  };
+  return (
+    <>
+      <div className="mb-5">
+        <h1 className="text-xl font-semibold">お気に入りコイン</h1>
+        <p className="mt-1 text-sm text-[#7f9097]">CAだけを入力すると、コイン情報を実データから自動取得します。</p>
+      </div>
+      <Card className="mb-3">
+        <SectionHeader title="CAで登録" note="名称・シンボル・価格情報の手入力は不要です" />
+        <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-end">
+          <div className="flex-1">
+            <Field label="コントラクトアドレス（CA）" value={mint} onChange={value => setMint(String(value))} placeholder="SolanaトークンのMint Address" />
+          </div>
+          <button onClick={() => void submit()} disabled={adding || !mint.trim()} className="h-[42px] rounded-xl bg-[#38e7ae] px-5 text-sm font-semibold text-[#06110d] disabled:opacity-40">
+            {adding ? "実データ取得中…" : "お気に入りに登録"}
+          </button>
+        </div>
+        {message && <p className={`px-5 pb-5 text-xs ${message.includes("登録しました") ? "text-emerald-300" : "text-amber-300"}`}>{message}</p>}
+      </Card>
+      {favorites.length ? (
+        <div className="grid gap-3 lg:grid-cols-2">
+          {favorites.map(token => {
+            const related = Object.values(activities).filter(activity => activity.events.some(event => event.mint === token.mint));
+            return (
+              <Card key={token.mint}>
+                <button type="button" onClick={() => void openToken(token.mint)} className="flex w-full items-start gap-4 p-5 text-left">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[#172520] text-lg font-bold text-[#38e7ae]">{token.symbol.slice(0, 1)}</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold">{token.name}</h2><Badge>{token.symbol}</Badge></div>
+                    <p className="mt-2 break-all font-mono text-[10px] text-[#65757b]">{token.mint}</p>
+                    <p className="mt-2 text-[11px] text-[#65757b]">登録 {new Date(token.addedAt).toLocaleString("ja-JP")}・{token.dex}</p>
+                  </div>
+                  <Badge tone={openedMint === token.mint ? "green" : "gray"}>{openedMint === token.mint ? "閉じる" : "優秀ウォレットを見る"}</Badge>
+                </button>
+                <div className="flex flex-wrap gap-2 border-t border-white/[0.07] px-5 py-3">
+                  <button onClick={() => void copyCa(token.mint)} className="rounded-lg border border-white/10 px-3 py-2 text-xs text-[#b5c0c4] hover:border-[#38e7ae] hover:text-[#38e7ae]">{copiedMint === token.mint ? "コピーしました" : "CAをコピー"}</button>
+                  <button onClick={() => onDelete(token.mint)} className="ml-auto flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 text-xs text-[#89989e] hover:border-rose-400/50 hover:text-rose-300"><Trash2 size={13} />削除</button>
+                </div>
+                <div className="grid grid-cols-3 gap-px border-t border-white/[0.07] bg-white/[0.07]">
+                  <div className="bg-[#101619] p-4"><p className="text-[10px] text-[#68787e]">現在価格</p><p className="mt-1 text-sm font-semibold tabular-nums">${token.priceUsd.toPrecision(5)}</p></div>
+                  <div className="bg-[#101619] p-4"><p className="text-[10px] text-[#68787e]">流動性</p><p className="mt-1 text-sm font-semibold tabular-nums">{money(token.liquidityUsd)}</p></div>
+                  <div className="bg-[#101619] p-4"><p className="text-[10px] text-[#68787e]">時価総額</p><p className="mt-1 text-sm font-semibold tabular-nums">{money(token.marketCapUsd)}</p></div>
+                </div>
+                <div className="border-t border-white/[0.07] px-5 py-4">
+                  <p className="text-xs text-[#7d8d93]">このコインの実取引が見つかった登録ウォレット</p>
+                  {related.length ? <div className="mt-3 flex flex-wrap gap-2">{related.map(activity => <Badge key={activity.address} tone="gray">{shortAddress(activity.address)}</Badge>)}</div> : <p className="mt-2 text-xs text-[#59686e]">現在取得済みの履歴にはありません</p>}
+                </div>
+                {openedMint === token.mint && (
+                  <div className="border-t border-white/[0.07] bg-[#0b1113]">
+                    <div className="px-5 py-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold">このコインで利益を確定した上位ウォレット</p>
+                        {walletResults[token.mint] && <Badge tone={walletResults[token.mint].tokenRisk.safe ? "green" : "red"}>{walletResults[token.mint].tokenRisk.safe ? "危険判定を通過" : "危険判定で除外"}</Badge>}
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-[#65757b]">開いた時点で実取引を分析します。対象コインの確定利益がプラスの上位5件です。</p>
+                      {walletResults[token.mint] && !walletResults[token.mint].tokenRisk.safe && <p className="mt-2 text-xs leading-5 text-rose-300">{walletResults[token.mint].scope}</p>}
+                    </div>
+                    {loadingMint === token.mint ? (
+                      <div className="flex items-center justify-center gap-3 px-5 py-10 text-xs text-[#819097]"><RefreshCw size={15} className="animate-spin text-[#38e7ae]" />実データを分析中…</div>
+                    ) : walletResults[token.mint]?.matches.length ? (
+                      <div className="divide-y divide-white/[0.07] border-t border-white/[0.07]">
+                        {walletResults[token.mint].matches.map((wallet, index) => (
+                          <div key={wallet.address} className="p-5">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <p className="font-mono text-xs text-[#cbd4d7]">#{index + 1} {wallet.address}</p>
+                                <p className="mt-2 text-[11px] text-[#65757b]">対象コイン確定利益 <span className="font-semibold text-[#38e7ae]">{money(wallet.tokenRealizedProfitUsd, true)}</span>・決済 {wallet.tokenClosedTrades}件・全体スコア {wallet.score}点</p>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  const result = onAddManual(wallet.address, `${token.symbol} 上位 #${index + 1}`);
+                                  setMessage(result ?? "手動コピー元へ登録しました");
+                                }}
+                                className="rounded-lg border border-[#38e7ae]/30 bg-[#38e7ae]/10 px-3 py-2 text-xs font-medium text-[#38e7ae] hover:bg-[#38e7ae]/20"
+                              >
+                                手動コピー元へ登録
+                              </button>
+                            </div>
+                            <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                              <div><span className="text-[#65757b]">30日ROI</span><p className="mt-1 font-semibold text-white">{pct(wallet.roi30d)}</p></div>
+                              <div><span className="text-[#65757b]">全体確定利益</span><p className="mt-1 font-semibold text-white">{money(wallet.realizedProfitUsd, true)}</p></div>
+                              <div><span className="text-[#65757b]">勝率</span><p className="mt-1 font-semibold text-white">{wallet.winRate.toFixed(1)}%</p></div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : walletResults[token.mint] ? (
+                      <EmptyState title="条件に合うウォレットは見つかりませんでした" detail="今回の実データ範囲では、対象コインで決済済みの確定利益がプラスのウォレットがありません。" />
+                    ) : null}
+                  </div>
+                )}
+              </Card>
+            );
+          })}
+        </div>
+      ) : <Card><EmptyState title="お気に入りコインは未登録です" detail="CAを1つ入力してください。DEX Screenerで実在する取引ペアを確認できたコインだけ登録します。" /></Card>}
+    </>
+  );
+}
+
+function ActivityView({
+  activities,
+  positions,
+  skipped,
+  onClose,
+}: {
+  activities: ActivityByWallet;
+  positions: LivePaperPosition[];
+  skipped: SkippedPaperTrade[];
+  onClose: (position: LivePaperPosition, reason: string) => void;
+}) {
+  const events = Object.values(activities)
+    .flatMap(activity => activity.events.map(event => ({ ...event, wallet: activity.address })))
+    .sort((a, b) => b.blockTime - a.blockTime);
+  return (
+    <>
+      <div className="mb-5">
+        <h1 className="text-xl font-semibold">実取引・ペーパー履歴</h1>
+        <p className="mt-1 text-sm text-[#7f9097]">コピー元の実取引と、仮想資金によるコピー結果を分けて表示します。</p>
+      </div>
+      <Card>
+        <SectionHeader title="ペーパートレード" note="注文送信・実資金移動は一切ありません" />
+        {positions.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[900px] text-left text-xs">
+              <thead className="text-[#66767c]"><tr>{["状態", "コイン", "コピー元", "検知遅延", "コピー価格", "現在/決済価格", "仮想額", "損益", "理由"].map(item => <th key={item} className="px-4 py-3 font-medium">{item}</th>)}</tr></thead>
+              <tbody>{[...positions].reverse().map(position => {
+                const price = position.status === "CLOSED" ? position.exitPriceUsd ?? position.currentPriceUsd : position.currentPriceUsd;
+                const result = calculatePaperPnl(position.copyPriceUsd, price, position.amountUsd);
+                return (
+                  <tr key={position.id} className="border-t border-white/[0.07]">
+                    <td className="px-4 py-3"><Badge tone={position.status === "OPEN" ? "green" : "gray"}>{position.status === "OPEN" ? "保有中" : "決済済み"}</Badge></td>
+                    <td className="px-4 py-3 font-semibold">{position.symbol}</td>
+                    <td className="px-4 py-3 font-mono">{shortAddress(position.wallet)}</td>
+                    <td className="px-4 py-3 tabular-nums">{position.detectionDelaySeconds}秒</td>
+                    <td className="px-4 py-3 tabular-nums">${position.copyPriceUsd.toPrecision(5)}</td>
+                    <td className="px-4 py-3 tabular-nums">${price.toPrecision(5)}</td>
+                    <td className="px-4 py-3 tabular-nums">{money(position.amountUsd)}</td>
+                    <td className={`px-4 py-3 tabular-nums ${result.pnlUsd >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>{money(result.pnlUsd, true)}<br />{pct(result.pnlPct)}</td>
+                    <td className="px-4 py-3">{position.status === "OPEN" ? <button onClick={() => onClose(position, "手動決済")} className="text-rose-300 hover:underline">手動決済</button> : position.exitReason}</td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+          </div>
+        ) : <EmptyState title="ペーパートレード履歴はありません" detail="監視開始後に新規購入を検知した場合だけ作成します。過去取引を遡ってコピーすることはありません。" />}
+      </Card>
+      <Card className="mt-3">
+        <SectionHeader title="コピー元の実取引" note={`${events.length}件取得`} />
+        {events.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-xs">
+              <thead className="text-[#66767c]"><tr>{["日時", "売買", "コイン", "コピー元", "数量", "取引価格", "流動性"].map(item => <th key={item} className="px-4 py-3 font-medium">{item}</th>)}</tr></thead>
+              <tbody>{events.map(event => (
+                <tr key={`${event.signature}-${event.mint}`} className="border-t border-white/[0.07]">
+                  <td className="px-4 py-3">{new Date(event.blockTime * 1000).toLocaleString("ja-JP")}</td>
+                  <td className="px-4 py-3"><Badge tone={event.side === "BUY" ? "green" : "red"}>{event.side === "BUY" ? "購入" : "売却"}</Badge></td>
+                  <td className="px-4 py-3 font-semibold">{event.current?.symbol ?? shortAddress(event.mint)}</td>
+                  <td className="px-4 py-3 font-mono">{shortAddress(event.wallet)}</td>
+                  <td className="px-4 py-3 tabular-nums">{event.tokenAmount.toLocaleString("en-US", { maximumFractionDigits: 4 })}</td>
+                  <td className="px-4 py-3 tabular-nums">{event.sourcePriceUsd ? `$${event.sourcePriceUsd.toPrecision(5)}` : "算定不可"}</td>
+                  <td className="px-4 py-3 tabular-nums">{event.current ? money(event.current.liquidityUsd) : "取得不可"}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        ) : <EmptyState title="コピー元の実取引は未取得です" detail="コピー元画面からデータ更新を実行してください。" />}
+      </Card>
+      <Card className="mt-3">
+        <SectionHeader title="見送り履歴" note="条件に合わずコピーしなかった実シグナルも保存" />
+        {skipped.length ? (
+          <div className="divide-y divide-white/[0.07]">{[...skipped].reverse().map(item => (
+            <div key={item.id} className="flex flex-wrap items-center gap-3 px-5 py-4 text-xs">
+              <Badge tone="amber">見送り</Badge><span className="font-semibold">{item.symbol}</span><span className="font-mono text-[#718188]">{shortAddress(item.wallet)}</span><span className="ml-auto text-[#a4b0b4]">{item.reason}</span>
+            </div>
+          ))}</div>
+        ) : <EmptyState title="見送り履歴はありません" detail="監視開始後の新規購入が条件外だった場合に記録されます。" />}
+      </Card>
+    </>
+  );
+}
+
+function SettingsView({ settings, onChange }: { settings: CopySettings; onChange: (settings: CopySettings) => void }) {
+  const update = <K extends keyof CopySettings>(key: K, value: CopySettings[K]) => onChange({ ...settings, [key]: value });
+  const numberFields: Array<[keyof CopySettings, string, string]> = [
+    ["amountPerTrade", "1取引の仮想購入額", "USD"],
+    ["maxPositions", "最大同時保有数", "件"],
+    ["maxDailyAmount", "1日の最大仮想購入額", "USD"],
+    ["stopLoss", "損切り率", "%"],
+    ["takeProfit", "利確率", "%"],
+    ["maxSlippage", "最大スリッページ", "%"],
+    ["minLiquidity", "最低流動性", "USD"],
+    ["minMarketCap", "最低時価総額", "USD"],
+    ["maxDetectionSeconds", "コピー可能な検知遅延", "秒"],
+    ["maxPriceRise", "見送る価格上昇率", "%"],
+  ];
+  return (
+    <>
+      <div className="mb-5">
+        <h1 className="text-xl font-semibold">コピー設定</h1>
+        <p className="mt-1 text-sm text-[#7f9097]">設定はこの端末に保存され、すべてペーパートレードにだけ適用されます。</p>
+      </div>
+      <Card className="max-w-4xl">
+        <SectionHeader title="実行設定" note="秘密鍵は不要です。実注文を送る処理はありません。" />
+        <div className="p-5">
+          <div className="mb-6 flex items-center justify-between rounded-xl border border-white/10 bg-[#0a0f11] p-4">
+            <div><p className="text-sm font-semibold">コピー監視</p><p className="mt-1 text-xs text-[#718188]">15秒ごとに有効なコピー元を確認</p></div>
+            <Toggle checked={settings.enabled} onChange={value => update("enabled", value)} label="コピー監視" />
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {numberFields.map(([key, label, suffix]) => (
+              <Field key={key} type="number" label={label} value={settings[key] as number} suffix={suffix} onChange={value => update(key, Number(value) as never)} />
+            ))}
+          </div>
+          <div className="mt-6 flex items-center justify-between rounded-xl border border-white/10 bg-[#0a0f11] p-4">
+            <div><p className="text-sm font-semibold">同じコインへの重複購入</p><p className="mt-1 text-xs text-[#718188]">OFFなら既存ポジション保有中は見送ります</p></div>
+            <Toggle checked={settings.allowDuplicate} onChange={value => update("allowDuplicate", value)} label="重複購入" />
+          </div>
+        </div>
+      </Card>
+    </>
+  );
+}
+
+export function TradingApp() {
+  const [view, setView] = useState<View>("dashboard");
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+  const [wallets, setWallets] = useState<TrackedWallet[]>([]);
+  const [activities, setActivities] = useState<ActivityByWallet>({});
+  const [favorites, setFavorites] = useState<FavoriteToken[]>([]);
+  const [positions, setPositions] = useState<LivePaperPosition[]>([]);
+  const [skipped, setSkipped] = useState<SkippedPaperTrade[]>([]);
+  const [settings, setSettings] = useState<CopySettings>(defaultSettings);
+  const [scanResult, setScanResult] = useState<WalletScanResponse | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
+  const processedRef = useRef(new Set<string>());
+  const initializedRef = useRef(new Set<string>());
+  const walletsRef = useRef(wallets);
+  const settingsRef = useRef(settings);
+  const positionsRef = useRef(positions);
+
+  useEffect(() => { walletsRef.current = wallets; }, [wallets]);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
+  useEffect(() => { positionsRef.current = positions; }, [positions]);
+
+  useEffect(() => {
+    const load = <T,>(key: string, fallback: T): T => {
+      try {
+        const value = localStorage.getItem(key);
+        return value ? JSON.parse(value) as T : fallback;
+      } catch {
+        return fallback;
+      }
+    };
+    setWallets(load(STORAGE.wallets, []));
+    setPositions(load(STORAGE.positions, []));
+    setSkipped(load(STORAGE.skipped, []));
+    setFavorites(load(STORAGE.favorites, []));
+    setSettings(load(STORAGE.settings, defaultSettings));
+    processedRef.current = new Set(load<string[]>(STORAGE.processed, []));
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.wallets, JSON.stringify(wallets)); }, [wallets, hydrated]);
+  useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.positions, JSON.stringify(positions)); }, [positions, hydrated]);
+  useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.skipped, JSON.stringify(skipped)); }, [skipped, hydrated]);
+  useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.settings, JSON.stringify(settings)); }, [settings, hydrated]);
+  useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.favorites, JSON.stringify(favorites)); }, [favorites, hydrated]);
+
+  const closePosition = useCallback((position: LivePaperPosition, reason: string, exitPrice = position.currentPriceUsd) => {
+    setPositions(current => current.map(item => item.id === position.id ? {
+      ...item,
+      status: "CLOSED",
+      closedAt: new Date().toISOString(),
+      exitPriceUsd: exitPrice,
+      exitReason: reason,
+    } : item));
+  }, []);
+
+  const processNewEvent = useCallback(async (wallet: TrackedWallet, event: LiveWalletEvent) => {
+    const key = `${event.signature}:${event.mint}:${event.side}`;
+    if (processedRef.current.has(key)) return;
+    processedRef.current.add(key);
+    localStorage.setItem(STORAGE.processed, JSON.stringify([...processedRef.current].slice(-2000)));
+
+    if (event.side === "SELL") {
+      positionsRef.current
+        .filter(position => position.status === "OPEN" && position.wallet === wallet.address && position.mint === event.mint)
+        .forEach(position => closePosition(position, "コピー元が売却", event.current?.priceUsd ?? event.sourcePriceUsd ?? position.currentPriceUsd));
+      return;
+    }
+    if (!event.current) {
+      setSkipped(current => [...current, {
+        id: crypto.randomUUID(), signature: event.signature, wallet: wallet.address, mint: event.mint,
+        symbol: shortAddress(event.mint), detectedAt: new Date().toISOString(), reason: "現在価格を取得できない",
+      }]);
+      return;
+    }
+    const delay = Math.max(0, Math.floor(Date.now() / 1000 - event.blockTime));
+    const today = new Date().toISOString().slice(0, 10);
+    const spentToday = positionsRef.current
+      .filter(position => position.openedAt.startsWith(today))
+      .reduce((sum, position) => sum + position.amountUsd, 0);
+    const decision = evaluateCopySignal({
+      sourcePrice: event.sourcePriceUsd,
+      currentPrice: event.current.priceUsd,
+      detectedAfterSeconds: delay,
+      liquidityUsd: event.current.liquidityUsd,
+      marketCapUsd: event.current.marketCapUsd,
+    }, settingsRef.current, {
+      openPositions: positionsRef.current.filter(position => position.status === "OPEN").length,
+      spentTodayUsd: spentToday,
+      alreadyHolding: positionsRef.current.some(position => position.status === "OPEN" && position.mint === event.mint),
+      walletEnabled: wallet.enabled,
+    });
+    if (!decision.accepted) {
+      setSkipped(current => [...current, {
+        id: crypto.randomUUID(), signature: event.signature, wallet: wallet.address, mint: event.mint,
+        symbol: event.current?.symbol ?? shortAddress(event.mint), detectedAt: new Date().toISOString(), reason: decision.reason ?? "条件外",
+      }]);
+      return;
+    }
+    try {
+      const riskResponse = await fetch(`/api/live/risk?mint=${encodeURIComponent(event.mint)}`, { cache: "no-store" });
+      const riskPayload = await riskResponse.json() as { safe?: boolean; risks?: string[]; error?: string };
+      if (!riskResponse.ok) throw new Error(riskPayload.error ?? "危険判定を取得できない");
+      if (!riskPayload.safe) throw new Error(`危険トークン: ${(riskPayload.risks ?? []).slice(0, 2).join("、")}`);
+      const response = await fetch(`/api/live/quote?mint=${encodeURIComponent(event.mint)}&amountUsd=${settingsRef.current.amountPerTrade}&slippageBps=${Math.round(settingsRef.current.maxSlippage * 100)}`, { cache: "no-store" });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Jupiter見積もり失敗");
+      setPositions(current => [...current, {
+        id: crypto.randomUUID(),
+        signature: event.signature,
+        wallet: wallet.address,
+        mint: event.mint,
+        symbol: event.current?.symbol ?? shortAddress(event.mint),
+        openedAt: new Date().toISOString(),
+        sourceBlockTime: event.blockTime,
+        detectionDelaySeconds: delay,
+        sourcePriceUsd: event.sourcePriceUsd,
+        copyPriceUsd: event.current?.priceUsd ?? 0,
+        currentPriceUsd: event.current?.priceUsd ?? 0,
+        amountUsd: settingsRef.current.amountPerTrade,
+        liquidityUsd: event.current?.liquidityUsd ?? 0,
+        status: "OPEN",
+      }]);
+    } catch (quoteError) {
+      setSkipped(current => [...current, {
+        id: crypto.randomUUID(), signature: event.signature, wallet: wallet.address, mint: event.mint,
+        symbol: event.current?.symbol ?? shortAddress(event.mint), detectedAt: new Date().toISOString(),
+        reason: quoteError instanceof Error ? quoteError.message : "Jupiter交換経路なし",
+      }]);
+    }
+  }, [closePosition]);
+
+  const refreshWallet = useCallback(async (wallet: TrackedWallet, analyze = false) => {
+    setBusy(wallet.address);
+    setError(null);
+    try {
+      const [activityResponse, scoreResponse] = await Promise.all([
+        fetch(`/api/live/wallet?address=${encodeURIComponent(wallet.address)}`, { cache: "no-store" }),
+        analyze ? fetch(`/api/live/score?address=${encodeURIComponent(wallet.address)}`, { cache: "no-store" }) : Promise.resolve(null),
+      ]);
+      const activityPayload = await activityResponse.json() as LiveWalletResponse & { error?: string };
+      if (!activityResponse.ok) throw new Error(activityPayload.error ?? "実取引の取得に失敗しました");
+      setActivities(current => ({ ...current, [wallet.address]: activityPayload }));
+      setPositions(current => current.map(position => {
+        if (position.status !== "OPEN") return position;
+        const currentEvent = activityPayload.events.find(event => event.mint === position.mint && event.current);
+        if (!currentEvent?.current) return position;
+        const updated = { ...position, currentPriceUsd: currentEvent.current.priceUsd };
+        const pnl = calculatePaperPnl(updated.copyPriceUsd, updated.currentPriceUsd, updated.amountUsd);
+        if (pnl.pnlPct >= settingsRef.current.takeProfit) {
+          return { ...updated, status: "CLOSED", closedAt: new Date().toISOString(), exitPriceUsd: updated.currentPriceUsd, exitReason: "利確" };
+        }
+        if (pnl.pnlPct <= -settingsRef.current.stopLoss) {
+          return { ...updated, status: "CLOSED", closedAt: new Date().toISOString(), exitPriceUsd: updated.currentPriceUsd, exitReason: "損切り" };
+        }
+        return updated;
+      }));
+      if (analyze && scoreResponse) {
+        const scorePayload = await scoreResponse.json() as WalletScore & { error?: string };
+        if (scoreResponse.ok) setWallets(current => current.map(item => item.address === wallet.address ? { ...item, score: scorePayload } : item));
+      }
+      if (!initializedRef.current.has(wallet.address)) {
+        activityPayload.events.forEach(event => processedRef.current.add(`${event.signature}:${event.mint}:${event.side}`));
+        initializedRef.current.add(wallet.address);
+        localStorage.setItem(STORAGE.processed, JSON.stringify([...processedRef.current].slice(-2000)));
+      } else {
+        for (const event of [...activityPayload.events].sort((a, b) => a.blockTime - b.blockTime)) {
+          await processNewEvent(wallet, event);
+        }
+      }
+      setLastRefresh(new Date().toISOString());
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : "更新に失敗しました");
+    } finally {
+      setBusy(null);
+    }
+  }, [processNewEvent]);
+
+  const refreshAll = useCallback(async () => {
+    for (const wallet of walletsRef.current.filter(item => item.enabled)) await refreshWallet(wallet);
+  }, [refreshWallet]);
+
+  useEffect(() => {
+    if (!hydrated || !settings.enabled) return;
+    const timer = window.setInterval(() => void refreshAll(), 15000);
+    return () => window.clearInterval(timer);
+  }, [hydrated, settings.enabled, refreshAll]);
+
+  const addManual = (address: string, label: string) => {
+    if (!ADDRESS_PATTERN.test(address)) return "Solanaウォレットアドレスを確認してください";
+    const manualCount = wallets.filter(wallet => wallet.origin === "MANUAL").length;
+    const existing = wallets.find(wallet => wallet.address === address);
+    if (existing?.origin === "MANUAL") return "このアドレスは登録済みです";
+    if (manualCount >= 10) return "手動登録は最大10件です";
+    if (existing) {
+      setWallets(current => current.map(wallet => wallet.address === address ? { ...wallet, origin: "MANUAL", label: label || wallet.label } : wallet));
+      return null;
+    }
+    setWallets(current => [...current, { address, label: label || `手動 ${manualCount + 1}`, origin: "MANUAL", enabled: true, addedAt: new Date().toISOString() }]);
+    return null;
+  };
+
+  const scan = async () => {
+    setScanning(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/live/scan", { cache: "no-store" });
+      const payload = await response.json() as WalletScanResponse & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "スキャンに失敗しました");
+      setScanResult(payload);
+      setWallets(current => {
+        const manual = current.filter(wallet => wallet.origin === "MANUAL");
+        const oldAuto = new Map(current.filter(wallet => wallet.origin === "AUTO").map(wallet => [wallet.address, wallet]));
+        const manualAddresses = new Set(manual.map(wallet => wallet.address));
+        const auto = payload.qualified
+          .filter(score => !manualAddresses.has(score.address))
+          .slice(0, 5)
+          .map((score, index) => ({
+            address: score.address,
+            label: oldAuto.get(score.address)?.label ?? `自動採用 #${index + 1}`,
+            origin: "AUTO" as const,
+            enabled: oldAuto.get(score.address)?.enabled ?? true,
+            addedAt: oldAuto.get(score.address)?.addedAt ?? new Date().toISOString(),
+            score,
+          }));
+        return [...manual, ...auto];
+      });
+    } catch (scanError) {
+      setError(scanError instanceof Error ? scanError.message : "スキャンに失敗しました");
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const addFavorite = async (mint: string) => {
+    if (!ADDRESS_PATTERN.test(mint)) return "SolanaのCAを確認してください";
+    if (favorites.some(token => token.mint === mint)) return "このコインは登録済みです";
+    try {
+      const response = await fetch(`/api/live/token?mint=${encodeURIComponent(mint)}`, { cache: "no-store" });
+      const payload = await response.json() as Omit<FavoriteToken, "addedAt"> & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "コイン情報を取得できません");
+      setFavorites(current => [...current, { ...payload, addedAt: new Date().toISOString() }]);
+      return null;
+    } catch (favoriteError) {
+      return favoriteError instanceof Error ? favoriteError.message : "登録に失敗しました";
+    }
+  };
+
+  const openPositions = positions.filter(position => position.status === "OPEN");
+  const closedPnl = positions
+    .filter(position => position.status === "CLOSED" && position.exitPriceUsd)
+    .reduce((sum, position) => sum + calculatePaperPnl(position.copyPriceUsd, position.exitPriceUsd ?? position.copyPriceUsd, position.amountUsd).pnlUsd, 0);
+  const openPnl = openPositions.reduce((sum, position) => sum + calculatePaperPnl(position.copyPriceUsd, position.currentPriceUsd, position.amountUsd).pnlUsd, 0);
+  const paperBalance = INITIAL_PAPER_BALANCE + closedPnl + openPnl;
+  const currentTitle = useMemo(() => nav.find(item => item.id === view)?.label ?? "", [view]);
+
+  return (
+    <div className="min-h-screen">
+      <aside className={`fixed inset-y-0 left-0 z-40 w-64 border-r border-white/[0.07] bg-[#090d0f]/95 backdrop-blur-xl transition-transform lg:translate-x-0 ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>
+        <div className="flex h-16 items-center border-b border-white/[0.07] px-5">
+          <img src="/next-trade-icon.png" alt="NEXT-TRADE" className="mr-3 h-10 w-10 rounded-xl object-contain" />
+          <div><p className="text-sm font-bold tracking-[.12em]">NEXT-TRADE</p><p className="text-[9px] tracking-[.18em] text-[#5f7077]">SMART WALLET COPY</p></div>
+        </div>
+        <nav className="p-3">
+          {nav.map(item => {
+            const Icon = item.icon;
+            return (
+              <button key={item.id} onClick={() => { setView(item.id); setMobileOpen(false); }} className={`mb-1 flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm transition ${view === item.id ? "bg-[#16221e] text-[#38e7ae]" : "text-[#839299] hover:bg-white/[0.03] hover:text-white"}`}>
+                <Icon size={17} />{item.label}
+                {item.id === "sources" && <span className="ml-auto rounded bg-white/[0.06] px-1.5 py-0.5 text-[9px]">{wallets.length}</span>}
+              </button>
+            );
+          })}
+        </nav>
+        <div className="absolute bottom-0 left-0 right-0 border-t border-white/[0.07] p-4">
+          <div className="mb-3 flex items-center justify-between"><span className="text-xs text-[#7b8b91]">運用モード</span><Badge tone="amber">PAPER ONLY</Badge></div>
+          <div className="rounded-xl bg-white/[0.03] p-3">
+            <div className="flex items-center gap-2 text-xs"><span className="live-dot h-2 w-2 rounded-full bg-[#38e7ae]" />Solana Mainnet</div>
+            <p className="mt-1.5 text-[10px] text-[#5f7077]">市場データ：実データ</p>
+          </div>
+        </div>
+      </aside>
+      {mobileOpen && <button aria-label="メニューを閉じる" onClick={() => setMobileOpen(false)} className="fixed inset-0 z-30 bg-black/70 lg:hidden" />}
+      <div className="lg:pl-64">
+        <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-white/[0.07] bg-[#080c0e]/85 px-4 backdrop-blur-xl md:px-6">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setMobileOpen(true)} className="rounded-lg border border-white/10 p-2 lg:hidden"><Menu size={17} /></button>
+            <span className="text-sm font-medium">{currentTitle}</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="hidden text-right sm:block"><p className="text-[10px] text-[#64747a]">仮想残高</p><p className="text-sm font-semibold tabular-nums">{money(paperBalance)}</p></div>
+            <WalletMultiButton />
+          </div>
+        </header>
+        <main className="mx-auto max-w-[1500px] p-4 md:p-6">
+          {error && <div className="mb-4 flex items-start gap-3 rounded-xl border border-rose-400/20 bg-rose-400/[0.07] p-4 text-sm text-rose-200"><X size={17} className="mt-0.5 shrink-0" /><span className="flex-1">{error}</span><button onClick={() => setError(null)} className="text-xs">閉じる</button></div>}
+          <div className="mb-4 flex flex-wrap gap-2 text-[11px]">
+            <Badge tone="green"><ShieldCheck size={12} className="mr-1" />実ウォレットデータのみ</Badge>
+            <Badge tone="amber"><CircleDollarSign size={12} className="mr-1" />資金はデモ</Badge>
+            <Badge tone="gray">手動10件 + 自動5件</Badge>
+          </div>
+          {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} />}
+          {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={address => setWallets(current => current.filter(wallet => wallet.address !== address))} onToggle={(address, enabled) => setWallets(current => current.map(wallet => wallet.address === address ? { ...wallet, enabled } : wallet))} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
+          {view === "scanner" && <Scanner result={scanResult} scanning={scanning} autoCount={wallets.filter(wallet => wallet.origin === "AUTO").length} onScan={scan} />}
+          {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} />}
+          {view === "activity" && <ActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}
+          {view === "settings" && <SettingsView settings={settings} onChange={setSettings} />}
+        </main>
+      </div>
+    </div>
+  );
+}
