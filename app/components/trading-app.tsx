@@ -376,7 +376,7 @@ function Sources({
           </div>
         </Card>
         <Card>
-          <SectionHeader title="監視対象" note={`手動 ${manualCount}/10・自動採用 ${autoCount}/5・15秒間隔で実取引を確認`} />
+          <SectionHeader title="監視対象" note={`手動 ${manualCount}/10・採用候補 ${autoCount}/5・15秒間隔で実取引を確認`} />
           {wallets.length ? (
             <div className="divide-y divide-white/[0.07]">
               {wallets.map(wallet => {
@@ -387,7 +387,7 @@ function Sources({
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="font-semibold">{wallet.label || shortAddress(wallet.address)}</h3>
-                          <Badge tone={wallet.origin === "MANUAL" ? "gray" : "green"}>{wallet.origin === "MANUAL" ? "手動" : "自動採用"}</Badge>
+                          <Badge tone={wallet.origin === "MANUAL" ? "gray" : "green"}>{wallet.origin === "MANUAL" ? "手動" : "採用候補"}</Badge>
                           {wallet.score && <Badge tone={wallet.score.qualified ? "green" : "amber"}>{wallet.score.score}点</Badge>}
                         </div>
                         <p className="mt-2 break-all font-mono text-[11px] text-[#718188]">{wallet.address}</p>
@@ -414,45 +414,56 @@ function Sources({
 function Scanner({
   result,
   scanning,
+  wallets,
   autoCount,
   onScan,
+  onAddCandidate,
 }: {
   result: WalletScanResponse | null;
   scanning: boolean;
+  wallets: TrackedWallet[];
   autoCount: number;
   onScan: () => Promise<void>;
+  onAddCandidate: (wallet: WalletScore, rank: number) => void;
 }) {
   return (
     <>
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">優秀ウォレットスキャン</h1>
-          <p className="mt-1 text-sm text-[#7f9097]">直近のJupiter実取引から候補を発見し、30日確定損益で評価します。</p>
+          <p className="mt-1 text-sm text-[#7f9097]">複数DEXの実取引から候補を広く抽出し、30日確定損益で査定します。</p>
         </div>
         <button onClick={() => void onScan()} disabled={scanning} className="flex items-center gap-2 rounded-xl bg-[#38e7ae] px-5 py-3 text-sm font-semibold text-[#06110d] disabled:opacity-50">
           <Radar size={16} className={scanning ? "animate-spin" : ""} /> {scanning ? "実データを分析中…" : "今すぐスキャン"}
         </button>
       </div>
-      <div className="mb-3 grid gap-3 sm:grid-cols-3">
-        <Metric label="自動採用枠" value={`${autoCount} / 5`} detail="条件通過ウォレットのみ" />
-        <Metric label="今回の候補評価数" value={result ? String(result.scannedCandidates) : "—"} detail="架空データでの補充なし" />
-        <Metric label="今回の合格数" value={result ? String(result.qualified.length) : "—"} detail="合格が0件の場合もあります" accent={Boolean(result?.qualified.length)} />
+      <div className="mb-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric label="採用候補枠" value={`${autoCount} / 5`} detail="追加時はコピーOFF" />
+        <Metric label="重複除外後の発見数" value={result ? String(result.discoveredCandidates) : "—"} detail="複数DEX横断" />
+        <Metric label="今回の解析数" value={result ? String(result.scannedCandidates) : "—"} detail={result ? `解析成功 ${result.successfulAnalyses}件` : "架空データでの補充なし"} />
+        <Metric label="追加可能な上位候補" value={result ? String(result.qualified.length) : "—"} detail="上位5件のうち重大問題なし" accent={Boolean(result?.qualified.length)} />
       </div>
       <Card>
         <SectionHeader
-          title="実データ評価結果"
-          note={result?.scope ?? "スキャンを実行すると、評価対象と採用・不採用理由を表示します。"}
+          title="実データ査定結果・上位10件"
+          note={result?.scope ?? "スキャンを実行すると、上位10件と注意事項・追加不可理由を表示します。"}
           action={result && <Badge tone="gray">{new Date(result.fetchedAt).toLocaleString("ja-JP")}</Badge>}
         />
         {scanning ? (
           <div className="flex min-h-64 flex-col items-center justify-center">
             <RefreshCw className="animate-spin text-[#38e7ae]" />
-            <p className="mt-4 text-sm text-[#a2afb4]">候補抽出と30日履歴の集計を行っています</p>
-            <p className="mt-2 text-xs text-[#617076]">複数ウォレットを実APIで確認するため、少し時間がかかります。</p>
+            <p className="mt-4 text-sm text-[#a2afb4]">複数DEXから候補抽出し、30日履歴を集計しています</p>
+            <p className="mt-2 text-xs text-[#617076]">多数の実ウォレットを解析するため、数分かかる場合があります。</p>
           </div>
         ) : result?.evaluated.length ? (
           <div className="divide-y divide-white/[0.07]">
-            {result.evaluated.map((wallet, index) => (
+            {result.evaluated.map((wallet, index) => {
+              const blockers = wallet.blockers ?? [];
+              const warnings = wallet.warnings ?? (blockers.length ? [] : wallet.reasons ?? []);
+              const alreadyAdded = wallets.some(item => item.address === wallet.address);
+              const topFive = index < 5;
+              const canAdd = topFive && wallet.addable !== false && blockers.length === 0 && !alreadyAdded && autoCount < 5;
+              return (
               <div key={wallet.address} className="p-5">
                 <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
                   <div>
@@ -460,19 +471,47 @@ function Scanner({
                       <span className="text-xs text-[#59696f]">#{index + 1}</span>
                       <p className="font-mono text-xs text-[#cbd4d7]">{wallet.address}</p>
                     </div>
-                    <p className="mt-2 text-[11px] text-[#617076]">30日売買 {wallet.swaps30d}件・決済 {wallet.closedTrades}件・経過 {wallet.ageDays}日・価格算定 {wallet.valuedEvents}件</p>
+                    <p className="mt-2 text-[11px] text-[#617076]">30日売買 {wallet.swaps30d}件・売却 {wallet.sellEvents ?? 0}件・決済 {wallet.closedTrades}件・経過 {wallet.ageDays}日・価格算定 {wallet.valuedEvents}件</p>
+                    <p className="mt-1 text-[11px] text-[#526269]">検出元: {(wallet.sources ?? []).join("・") || "オンチェーン履歴"}</p>
                   </div>
-                  <Badge tone={wallet.qualified ? "green" : "amber"}>{wallet.qualified ? "採用条件を通過" : "条件未達"}</Badge>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <Badge tone={blockers.length ? "red" : warnings.length ? "amber" : "green"}>
+                      {blockers.length ? "重大問題・追加不可" : warnings.length ? "注意事項あり" : "良好"}
+                    </Badge>
+                    {!topFive && <Badge tone="gray">査定のみ</Badge>}
+                    {topFive && alreadyAdded && <Badge tone="green">候補追加済み</Badge>}
+                    {topFive && (
+                      <button
+                        type="button"
+                        disabled={!canAdd}
+                        onClick={() => onAddCandidate(wallet, index + 1)}
+                        className="rounded-lg border border-[#38e7ae]/30 bg-[#38e7ae]/10 px-3 py-2 text-xs font-semibold text-[#38e7ae] disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-[#68777c]"
+                      >
+                        {alreadyAdded ? "追加済み" : autoCount >= 5 ? "候補枠上限" : blockers.length ? "追加不可" : "採用候補に追加"}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <ScorePanel score={wallet} />
-                {!wallet.qualified && <div className="mt-4 flex flex-wrap gap-2">{wallet.reasons.map(reason => <Badge key={reason} tone="gray">{reason}</Badge>)}</div>}
+                {warnings.length > 0 && (
+                  <div className="mt-4">
+                    <p className="mb-2 text-[11px] text-amber-300">注意事項（ユーザー判断で追加可能）</p>
+                    <div className="flex flex-wrap gap-2">{warnings.map(reason => <Badge key={reason} tone="amber">{reason}</Badge>)}</div>
+                  </div>
+                )}
+                {blockers.length > 0 && (
+                  <div className="mt-4">
+                    <p className="mb-2 text-[11px] text-rose-300">重大な問題</p>
+                    <div className="flex flex-wrap gap-2">{blockers.map(reason => <Badge key={reason} tone="red">{reason}</Badge>)}</div>
+                  </div>
+                )}
               </div>
-            ))}
+            )})}
           </div>
-        ) : <EmptyState title="まだスキャン結果がありません" detail="実行すると合格ウォレットを自動枠へ追加します。合格数が5件未満でも架空アドレスは追加しません。" />}
+        ) : <EmptyState title="まだスキャン結果がありません" detail="実行すると実データの上位10件を査定します。候補追加後もコピーはOFFのままです。" />}
       </Card>
       <div className="mt-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-4 text-xs leading-6 text-amber-100/70">
-        MVPのスキャン範囲はSolana全履歴の完全走査ではありません。直近80件のJupiter v6成功取引から最大10候補を抽出し、各候補の30日履歴を評価します。開発者関連・自己売買などの高度なクラスタ分析は今後拡張します。
+        Solana全履歴の完全走査ではありません。Jupiter・Raydium・Orca・Meteora・Pump.fun・PumpSwapの直近取引から重複を除外して候補を抽出し、設定された解析上限まで30日履歴を評価します。
       </div>
     </>
   );
@@ -965,30 +1004,39 @@ export function TradingApp() {
     setScanning(true);
     setError(null);
     try {
-      const payload = await requestJson<WalletScanResponse>("/api/live/scan", 120_000);
+      const payload = await requestJson<WalletScanResponse>("/api/live/scan", 300_000);
       setScanResult(payload);
-      setWallets(current => {
-        const manual = current.filter(wallet => wallet.origin === "MANUAL");
-        const oldAuto = new Map(current.filter(wallet => wallet.origin === "AUTO").map(wallet => [wallet.address, wallet]));
-        const manualAddresses = new Set(manual.map(wallet => wallet.address));
-        const auto = payload.qualified
-          .filter(score => !manualAddresses.has(score.address))
-          .slice(0, 5)
-          .map((score, index) => ({
-            address: score.address,
-            label: oldAuto.get(score.address)?.label ?? `自動採用 #${index + 1}`,
-            origin: "AUTO" as const,
-            enabled: oldAuto.get(score.address)?.enabled ?? true,
-            addedAt: oldAuto.get(score.address)?.addedAt ?? new Date().toISOString(),
-            score,
-          }));
-        return [...manual, ...auto];
-      });
     } catch (scanError) {
       setError(scanError instanceof Error ? scanError.message : "スキャンに失敗しました");
     } finally {
       setScanning(false);
     }
+  };
+
+  const addScanCandidate = (score: WalletScore, rank: number) => {
+    if (rank > 5) return;
+    const blockers = score.blockers ?? [];
+    if (score.addable === false || blockers.length > 0 || score.score === 0 || (score.sellEvents ?? 0) === 0) {
+      setError(`このウォレットは追加できません: ${blockers.join("、") || "重大な問題があります"}`);
+      return;
+    }
+    setWallets(current => {
+      if (current.some(wallet => wallet.address === score.address)) return current;
+      const autoCount = current.filter(wallet => wallet.origin === "AUTO").length;
+      if (autoCount >= 5) {
+        setError("採用候補は最大5件です");
+        return current;
+      }
+      setError(null);
+      return [...current, {
+        address: score.address,
+        label: `採用候補 #${rank}`,
+        origin: "AUTO",
+        enabled: false,
+        addedAt: new Date().toISOString(),
+        score,
+      }];
+    });
   };
 
   const addFavorite = async (mint: string) => {
@@ -1065,7 +1113,7 @@ export function TradingApp() {
           </div>
           {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} />}
           {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={address => setWallets(current => current.filter(wallet => wallet.address !== address))} onToggle={(address, enabled) => setWallets(current => current.map(wallet => wallet.address === address ? { ...wallet, enabled } : wallet))} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
-          {view === "scanner" && <Scanner result={scanResult} scanning={scanning} autoCount={wallets.filter(wallet => wallet.origin === "AUTO").length} onScan={scan} />}
+          {view === "scanner" && <Scanner result={scanResult} scanning={scanning} wallets={wallets} autoCount={wallets.filter(wallet => wallet.origin === "AUTO").length} onScan={scan} onAddCandidate={addScanCandidate} />}
           {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} />}
           {view === "activity" && <ActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}
           {view === "settings" && <SettingsView settings={settings} onChange={setSettings} />}

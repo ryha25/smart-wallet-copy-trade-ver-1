@@ -12,6 +12,18 @@ const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD5G6zK9y7J9pB6K7dVn";
 const WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
 const JUPITER_V6_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+const SYSTEM_PROGRAM = "11111111111111111111111111111111";
+const DEX_DISCOVERY_SOURCES = [
+  { name: "Jupiter v6", programId: JUPITER_V6_PROGRAM },
+  { name: "Raydium AMM v4", programId: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" },
+  { name: "Raydium CPMM", programId: "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C" },
+  { name: "Raydium CLMM", programId: "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" },
+  { name: "Orca Whirlpool", programId: "whirLbMiicVdio4qvUfM5KAg6CtQaC3m5tqKroCT3k" },
+  { name: "Meteora DLMM", programId: "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo" },
+  { name: "Pump.fun", programId: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" },
+  { name: "PumpSwap", programId: "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA" },
+] as const;
+const DEX_PROGRAM_IDS = new Set<string>(DEX_DISCOVERY_SOURCES.map(source => source.programId));
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
@@ -57,8 +69,38 @@ type ParsedMintAccount = {
   } | null;
 };
 
+type RpcAccountInfo = {
+  value: {
+    executable?: boolean;
+    owner?: string;
+  } | null;
+};
+
 function env(name: string) {
   return process.env[name]?.trim().replace(/^(['"])(.*)\1$/, "$2") ?? "";
+}
+
+function boundedInteger(name: string, fallback: number, min: number, max: number) {
+  const value = Number(env(name));
+  return Number.isFinite(value) ? Math.max(min, Math.min(max, Math.floor(value))) : fallback;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+) {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 function rpcEndpoint() {
@@ -421,6 +463,7 @@ function closeTrades(events: LiveWalletEvent[]) {
 
 function scoreWallet(address: string, events: LiveWalletEvent[], ageDays: number, evaluatedTransactions: number): WalletScore {
   const closed = closeTrades(events);
+  const sellEvents = events.filter(event => event.side === "SELL").length;
   const realizedProfitUsd = closed.reduce((sum, trade) => sum + trade.pnl, 0);
   const cost = closed.reduce((sum, trade) => sum + trade.cost, 0);
   const roi30d = cost > 0 ? realizedProfitUsd / cost * 100 : 0;
@@ -457,48 +500,76 @@ function scoreWallet(address: string, events: LiveWalletEvent[], ageDays: number
   if (closed.length < 3) score -= 10;
   score = Math.round(Math.max(0, Math.min(95, score)));
 
-  const reasons: string[] = [];
-  if (roi30d < 60) reasons.push("30日ROIが60%未満");
-  if (realizedProfitUsd <= 0) reasons.push("30日確定利益がプラスではない");
-  if (winRate < 60) reasons.push("勝率が60%未満");
-  if (events.length < 20) reasons.push("30日売買件数が20件未満");
-  if (ageDays < 90) reasons.push("初回取引から90日未満");
-  if (closed.length < 3) reasons.push("複数の決済実績が不足");
-  if (profitableWeeks < 2) reasons.push("利益継続性が不足");
-  if (concentration > 0.8) reasons.push("利益が特定銘柄に集中");
+  const warnings: string[] = [];
+  const blockers: string[] = [];
+  if (roi30d < 60) warnings.push("30日ROIが60%未満");
+  if (realizedProfitUsd <= 0) warnings.push("30日確定利益がプラスではない");
+  if (winRate < 60) warnings.push("勝率が60%未満");
+  if (events.length < 20) warnings.push("30日売買件数が20件未満");
+  if (ageDays < 90) warnings.push("初回取引から90日未満");
+  if (sellEvents === 0) blockers.push("売却履歴なし");
+  if (closed.length < 3) warnings.push("複数の決済実績が不足");
+  if (profitableWeeks < 2) warnings.push("利益継続性が不足");
+  if (concentration > 0.8) warnings.push("利益が特定銘柄に集中");
+  if (score === 0) blockers.push("スコア0");
 
   return {
     address,
+    sources: [],
     score,
     roi30d: Number(roi30d.toFixed(2)),
     realizedProfitUsd: Number(realizedProfitUsd.toFixed(2)),
     winRate: Number(winRate.toFixed(2)),
     swaps30d: events.length,
+    sellEvents,
     closedTrades: closed.length,
     ageDays,
     maxDrawdownPct: Number(maxDrawdownPct.toFixed(2)),
     profitableWeeks,
     evaluatedTransactions,
     valuedEvents: events.filter(event => event.quoteAmountUsd).length,
-    qualified: reasons.length === 0,
-    reasons,
+    addable: blockers.length === 0,
+    qualified: warnings.length === 0 && blockers.length === 0,
+    warnings,
+    blockers,
+    reasons: [...blockers, ...warnings],
     evaluatedAt: new Date().toISOString(),
   };
 }
 
+function blockedWalletScore(address: string, blocker: string): WalletScore {
+  const score = scoreWallet(address, [], 0, 0);
+  score.blockers = [...new Set([blocker, ...score.blockers])];
+  score.reasons = [...score.blockers, ...score.warnings];
+  score.addable = false;
+  score.qualified = false;
+  return score;
+}
+
 async function analyzeWalletWithEvents(address: string): Promise<{ score: WalletScore; events: LiveWalletEvent[] }> {
   if (!ADDRESS_PATTERN.test(address)) throw new Error("Solanaウォレットアドレスが正しくありません");
+  if (DEX_PROGRAM_IDS.has(address)) {
+    return { score: blockedWalletScore(address, "DEX・プログラムアドレス"), events: [] };
+  }
   const now = Math.floor(Date.now() / 1000);
   const since = now - 30 * 86400;
-  const [history, first] = await Promise.all([
+  const [accountInfo, history, first] = await Promise.all([
+    rpc<RpcAccountInfo>("getAccountInfo", [address, { encoding: "base64", commitment: "confirmed" }]).catch(() => null),
     getHeliusHistory(address, {
       transactionDetails: "full",
-      limit: 250,
+      limit: 100,
       sortOrder: "asc",
       filters: { status: "succeeded", tokenAccounts: "balanceChanged", blockTime: { gte: since } },
     }),
     getHeliusHistory(address, { transactionDetails: "signatures", limit: 1, sortOrder: "asc" }),
   ]);
+  const account = accountInfo?.value;
+  if (account?.executable) {
+    return { score: blockedWalletScore(address, "実行可能なプログラムアドレス"), events: [] };
+  }
+  if (account?.owner && account.owner !== SYSTEM_PROGRAM) {
+    return { score: blockedWalletScore(address, "DEX・流動性プール・プログラム所有アドレス"), events: [] };
+  }
   const raw = history.data.flatMap(tx =>
     swapsFromTransaction(tx, address, tx.transaction.signatures?.[0] ?? crypto.randomUUID()),
   );
@@ -517,20 +588,22 @@ async function analyzeWalletWithEvents(address: string): Promise<{ score: Wallet
     return account?.value?.data?.parsed?.info;
   }));
   if (mintAccounts.some(info => info?.mintAuthority === address || info?.freezeAuthority === address)) {
-    score.qualified = false;
-    score.reasons.push("トークン開発者権限との関連を検知");
+    score.blockers.push("危険ウォレット: トークン開発者権限との関連を検知");
     score.score = Math.max(0, score.score - 30);
   }
   if (events.length >= 150) {
-    score.qualified = false;
-    score.reasons.push("極端な高頻度取引のためBOT疑い");
+    score.blockers.push("危険ウォレット: 極端な高頻度取引のためBOT疑い");
     score.score = Math.max(0, score.score - 15);
   }
   if (score.winRate >= 98 && score.closedTrades >= 5) {
-    score.qualified = false;
-    score.reasons.push("異常に高い勝率のため内部取引疑い");
+    score.blockers.push("危険ウォレット: 異常に高い勝率のため内部取引疑い");
     score.score = Math.max(0, score.score - 15);
   }
+  if (score.score === 0 && !score.blockers.includes("スコア0")) score.blockers.push("スコア0");
+  score.blockers = [...new Set(score.blockers)];
+  score.addable = score.blockers.length === 0;
+  score.qualified = score.addable && score.warnings.length === 0;
+  score.reasons = [...score.blockers, ...score.warnings];
   return { score, events };
 }
 
@@ -539,21 +612,76 @@ export async function analyzeWallet(address: string): Promise<WalletScore> {
 }
 
 export async function scanProfitableWallets(): Promise<WalletScanResponse> {
-  const discovery = await getHeliusHistory(JUPITER_V6_PROGRAM, {
-    transactionDetails: "full",
-    limit: 80,
-    sortOrder: "desc",
-    filters: { status: "succeeded" },
+  const discoveryLimit = boundedInteger("WALLET_SCAN_DISCOVERY_PER_DEX", 100, 40, 100);
+  const analysisLimit = boundedInteger("WALLET_SCAN_ANALYSIS_LIMIT", 60, 20, 100);
+  const concurrency = boundedInteger("WALLET_SCAN_CONCURRENCY", 5, 1, 10);
+  const discoveryResults = await Promise.all(DEX_DISCOVERY_SOURCES.map(async source => {
+    try {
+      const history = await getHeliusHistory(source.programId, {
+        transactionDetails: "full",
+        limit: discoveryLimit,
+        sortOrder: "desc",
+        filters: { status: "succeeded" },
+      });
+      const addresses = [...new Set(
+        history.data
+          .map(tx => accountKeys(tx)[0])
+          .filter(address =>
+            ADDRESS_PATTERN.test(address)
+            && address !== source.programId
+            && !DEX_PROGRAM_IDS.has(address)
+          ),
+      )];
+      return { source: source.name, addresses, error: null as string | null };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[NEXT-TRADE][wallet.scan.discovery]", { source: source.name, message });
+      return { source: source.name, addresses: [] as string[], error: message };
+    }
+  }));
+
+  const allDiscovered = new Set(discoveryResults.flatMap(result => result.addresses));
+  const sourceByAddress = new Map<string, Set<string>>();
+  for (const result of discoveryResults) {
+    for (const address of result.addresses) {
+      const sources = sourceByAddress.get(address) ?? new Set<string>();
+      sources.add(result.source);
+      sourceByAddress.set(address, sources);
+    }
+  }
+
+  // Round-robin selection prevents a high-volume DEX from consuming the
+  // complete analysis budget before candidates from other venues are seen.
+  const candidates: string[] = [];
+  const selected = new Set<string>();
+  const maxSourceCandidates = Math.max(0, ...discoveryResults.map(result => result.addresses.length));
+  for (let index = 0; index < maxSourceCandidates && candidates.length < analysisLimit; index += 1) {
+    for (const result of discoveryResults) {
+      const address = result.addresses[index];
+      if (!address || selected.has(address)) continue;
+      selected.add(address);
+      candidates.push(address);
+      if (candidates.length >= analysisLimit) break;
+    }
+  }
+
+  const analyzed = await mapWithConcurrency(candidates, concurrency, async address => {
+    try {
+      const item = await analyzeWalletWithEvents(address);
+      item.score.sources = [...(sourceByAddress.get(address) ?? [])];
+      return item;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[NEXT-TRADE][wallet.scan.analysis]", { address, message, stack: error instanceof Error ? error.stack : undefined });
+      const score = blockedWalletScore(address, `解析失敗: ${message}`);
+      score.sources = [...(sourceByAddress.get(address) ?? [])];
+      return { score, events: [] };
+    }
   });
-  const candidates = [...new Set(
-    discovery.data
-      .map(tx => accountKeys(tx)[0])
-      .filter(address => ADDRESS_PATTERN.test(address) && address !== JUPITER_V6_PROGRAM),
-  )].slice(0, 10);
-  const analyzed = (await Promise.all(candidates.map(address => analyzeWalletWithEvents(address).catch(() => null))))
-    .filter((item): item is Awaited<ReturnType<typeof analyzeWalletWithEvents>> => Boolean(item));
-  await Promise.all(analyzed.map(async item => {
-    if (!item.score.qualified) return;
+
+  const riskTargets = [...analyzed].sort((a, b) => b.score.score - a.score.score).slice(0, 20);
+  await mapWithConcurrency(riskTargets, Math.min(4, concurrency), async item => {
+    if (!item.score.addable) return;
     const recentMints = [...new Set(
       [...item.events]
         .filter(event => event.side === "BUY")
@@ -563,17 +691,31 @@ export async function scanProfitableWallets(): Promise<WalletScanResponse> {
     const checks = await Promise.all(recentMints.map(mint => getTokenRisk(mint).catch(() => null)));
     const unsafe = checks.filter((check): check is TokenRiskCheck => Boolean(check && !check.safe));
     if (unsafe.length) {
-      item.score.qualified = false;
+      item.score.blockers.push(`危険ウォレット: 直近取引トークンに危険判定（${unsafe.flatMap(check => check.risks).slice(0, 2).join("、")}）`);
       item.score.score = Math.max(0, item.score.score - 20);
-      item.score.reasons.push(`直近取引トークンに危険判定: ${unsafe.flatMap(check => check.risks).slice(0, 2).join("、")}`);
     }
-  }));
-  const evaluated = analyzed.map(item => item.score).sort((a, b) => b.score - a.score);
+    item.score.blockers = [...new Set(item.score.blockers)];
+    if (item.score.score === 0 && !item.score.blockers.includes("スコア0")) item.score.blockers.push("スコア0");
+    item.score.addable = item.score.blockers.length === 0;
+    item.score.qualified = item.score.addable && item.score.warnings.length === 0;
+    item.score.reasons = [...item.score.blockers, ...item.score.warnings];
+  });
+
+  const ranked = analyzed.map(item => item.score).sort((a, b) =>
+    b.score - a.score
+    || b.realizedProfitUsd - a.realizedProfitUsd
+    || a.address.localeCompare(b.address),
+  );
+  const evaluated = ranked.slice(0, 10);
+  const successfulAnalyses = analyzed.filter(item => !item.score.blockers.some(reason => reason.startsWith("解析失敗"))).length;
+  const availableSources = discoveryResults.filter(result => !result.error).map(result => result.source);
   return {
-    source: "HELIUS_JUPITER_SCAN",
-    scope: "直近80件のJupiter v6成功取引から抽出した最大10ウォレットを30日履歴で評価",
+    source: "HELIUS_MULTI_DEX_SCAN",
+    scope: `${availableSources.join("・")}の各直近最大${discoveryLimit}件から重複を除外し、${candidates.length}ウォレットを30日履歴で評価。画面には上位10件を表示`,
+    discoveredCandidates: allDiscovered.size,
     scannedCandidates: candidates.length,
-    qualified: evaluated.filter(wallet => wallet.qualified).slice(0, 5),
+    successfulAnalyses,
+    qualified: evaluated.filter(wallet => wallet.addable).slice(0, 5),
     evaluated,
     fetchedAt: new Date().toISOString(),
   };

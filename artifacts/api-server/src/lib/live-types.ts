@@ -32,26 +32,33 @@ export type LiveWalletResponse = {
 
 export type WalletScore = {
   address: string;
+  sources: string[];
   score: number;
   roi30d: number;
   realizedProfitUsd: number;
   winRate: number;
   swaps30d: number;
+  sellEvents: number;
   closedTrades: number;
   ageDays: number;
   maxDrawdownPct: number;
   profitableWeeks: number;
   evaluatedTransactions: number;
   valuedEvents: number;
+  addable: boolean;
   qualified: boolean;
+  warnings: string[];
+  blockers: string[];
   reasons: string[];
   evaluatedAt: string;
 };
 
 export type WalletScanResponse = {
-  source: "HELIUS_JUPITER_SCAN";
+  source: "HELIUS_MULTI_DEX_SCAN";
   scope: string;
+  discoveredCandidates: number;
   scannedCandidates: number;
+  successfulAnalyses: number;
   qualified: WalletScore[];
   evaluated: WalletScore[];
   fetchedAt: string;

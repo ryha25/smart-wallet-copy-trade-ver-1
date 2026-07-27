@@ -45,7 +45,7 @@ Solana上の実在ウォレットと実市場データを分析し、コピー�
 
 ## データソース
 
-- Helius: ウォレット履歴、初回取引日、Jupiter取引候補
+- Helius: ウォレット履歴、初回取引日、Jupiter・Raydium・Orca・Meteora・Pump.fun・PumpSwapの取引候補
 - Birdeye: SOLの過去価格
 - Jupiter: ペーパートレード時点の交換経路と見積もり
 - DEX Screener: トークン情報、現在価格、流動性、時価総額
@@ -90,7 +90,9 @@ npx prisma migrate dev
 
 ## スキャン範囲と注意
 
-MVPの自動スキャンは、直近80件のJupiter v6成功取引から最大10ウォレットを抽出し、各ウォレットの30日履歴を評価します。Solanaチェーン全履歴を常時完全走査するものではありません。
+自動スキャンはJupiter・Raydium・Orca・Meteora・Pump.fun・PumpSwapの各直近最大100件からウォレットを抽出し、重複除外後の最大60ウォレットを30日履歴で評価します。画面にはランキング上位10件を表示し、上位5件だけをコピーOFFの採用候補として手動追加できます。Solanaチェーン全履歴を常時完全走査するものではありません。
+
+解析量は `WALLET_SCAN_DISCOVERY_PER_DEX`（40〜100）、`WALLET_SCAN_ANALYSIS_LIMIT`（20〜100）、`WALLET_SCAN_CONCURRENCY`（1〜10）で調整できます。値を増やすとHeliusの使用クレジットと処理時間も増えます。
 
 危険判定はリスク低減のためのフィルターであり、安全性や将来利益を保証しません。RugCheckの判定を取得できない場合も安全扱いせず、コピーを見送ります。
 
