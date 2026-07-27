@@ -1,12 +1,10 @@
+run = "pnpm run replit:dev"
 modules = ["nodejs-24"]
 
 [[ports]]
 localPort = 8080
 externalPort = 80
 
-[[ports]]
-localPort = 18245
-externalPort = 3000
-
-[workflows]
-runButton = "Project"
+[deployment]
+build = "pnpm run replit:build"
+run = "pnpm run replit:start"
