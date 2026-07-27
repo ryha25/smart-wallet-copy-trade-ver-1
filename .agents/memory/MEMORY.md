@@ -1,0 +1,1 @@
+- [Artifact recovery](artifact-recovery.md) — when platform removes artifact registration but files exist, use verifyAndReplaceArtifactToml to re-register without recreating.

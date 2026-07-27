@@ -5,6 +5,10 @@ modules = ["nodejs-24"]
 localPort = 8080
 externalPort = 80
 
+[[ports]]
+localPort = 18245
+externalPort = 3000
+
 [deployment]
 build = "pnpm run replit:build"
 run = "pnpm run replit:start"
