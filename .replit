@@ -12,3 +12,8 @@ externalPort = 3000
 [deployment]
 build = "pnpm run replit:build"
 run = "pnpm run replit:start"
+
+[userenv]
+
+[userenv.shared]
+DEBUG_ERRORS = "true"
