@@ -1,18 +1,97 @@
 import { Router } from "express";
-import { getLiveWalletActivity } from "../services/solana-live";
+import { PublicKey } from "@solana/web3.js";
+import { apiError } from "../lib/api-errors";
+import {
+  analyzeWallet,
+  getJupiterPaperQuote,
+  getLiveWalletActivity,
+  getTokenQuotes,
+  getTokenRisk,
+  scanProfitableWallets,
+  scanWalletsForToken,
+} from "../services/solana-live";
 
 const router = Router();
 
-router.get("/live/wallet", async (req, res) => {
-  const address = (req.query["address"] as string | undefined)?.trim() ?? "";
+router.get("/token", async (request, response) => {
+  const mint = String(request.query["mint"] ?? "").trim();
+  console.info("[NEXT-TRADE][favorite.token] input CA", { mint });
   try {
-    const data = await getLiveWalletActivity(address);
-    res.setHeader("cache-control", "no-store");
-    res.json(data);
+    try {
+      new PublicKey(mint);
+    } catch (publicKeyError) {
+      throw new Error(`CAをPublicKeyとして解析できません: ${mint}`, { cause: publicKeyError });
+    }
+    const quote = (await getTokenQuotes([mint])).get(mint);
+    if (!quote) {
+      response.status(404).json({
+        error: "DexScreenerで取引ペアが見つかりません",
+        details: `mint=${mint}, pairs=empty`,
+      });
+      return;
+    }
+    response.setHeader("cache-control", "no-store").json(quote);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "実データの取得に失敗しました";
-    res.status(400).json({ error: message });
+    response.status(400).json(apiError(error, "favorite.token"));
+  }
+});
+
+router.get("/token-wallets", async (request, response) => {
+  try {
+    const mint = String(request.query["mint"] ?? "").trim();
+    const data = await scanWalletsForToken(mint);
+    response.setHeader("cache-control", "no-store").json(data);
+  } catch (error) {
+    response.status(500).json(apiError(error, "favorite.wallets"));
+  }
+});
+
+router.get("/risk", async (request, response) => {
+  try {
+    const data = await getTokenRisk(String(request.query["mint"] ?? "").trim());
+    response.setHeader("cache-control", "no-store").json(data);
+  } catch (error) {
+    response.status(500).json(apiError(error, "token.risk"));
+  }
+});
+
+router.get("/quote", async (request, response) => {
+  try {
+    const data = await getJupiterPaperQuote(
+      String(request.query["mint"] ?? "").trim(),
+      Number(request.query["amountUsd"] ?? 0),
+      Number(request.query["slippageBps"] ?? 50),
+    );
+    response.setHeader("cache-control", "no-store").json(data);
+  } catch (error) {
+    response.status(400).json(apiError(error, "jupiter.quote"));
+  }
+});
+
+router.get("/wallet", async (request, response) => {
+  try {
+    const data = await getLiveWalletActivity(String(request.query["address"] ?? "").trim());
+    response.setHeader("cache-control", "no-store").json(data);
+  } catch (error) {
+    response.status(400).json(apiError(error, "wallet.activity"));
+  }
+});
+
+router.get("/score", async (request, response) => {
+  try {
+    const data = await analyzeWallet(String(request.query["address"] ?? "").trim());
+    response.setHeader("cache-control", "no-store").json(data);
+  } catch (error) {
+    response.status(400).json(apiError(error, "wallet.score"));
+  }
+});
+
+router.get("/scan", async (_request, response) => {
+  try {
+    const data = await scanProfitableWallets();
+    response.setHeader("cache-control", "no-store").json(data);
+  } catch (error) {
+    response.status(500).json(apiError(error, "wallet.scan"));
   }
 });
 

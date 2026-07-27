@@ -1,12 +1,15 @@
+import { apiError } from "../../../lib/api-errors";
+import { requireAppSession } from "../../../lib/app-auth";
 import { analyzeWallet } from "../../../services/solana-live";
 
 export async function GET(request: Request) {
-  const address = new URL(request.url).searchParams.get("address")?.trim() ?? "";
   try {
+    const unauthorized = await requireAppSession(request);
+    if (unauthorized) return unauthorized;
+    const address = new URL(request.url, "http://localhost").searchParams.get("address")?.trim() ?? "";
     const data = await analyzeWallet(address);
     return Response.json(data, { headers: { "cache-control": "no-store" } });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "ウォレット評価に失敗しました";
-    return Response.json({ error: message }, { status: 400 });
+    return Response.json(apiError(error, "wallet.score"), { status: 400 });
   }
 }

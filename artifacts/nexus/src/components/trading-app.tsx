@@ -1,3 +1,4 @@
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
@@ -42,6 +43,41 @@ const STORAGE = {
   processed: "swt-v2-processed",
   favorites: "swt-v2-favorites",
 };
+
+type ApiErrorResponse = { error?: string; details?: string; stack?: string };
+
+async function requestJson<T>(url: string, timeoutMs = 60_000): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(new Error(`リクエストが${Math.round(timeoutMs / 1000)}秒でタイムアウトしました`)), timeoutMs);
+  try {
+    const response = await fetch(url, { cache: "no-store", credentials: "include", signal: controller.signal });
+    const raw = await response.text();
+    let payload: (T & ApiErrorResponse) | null = null;
+    try {
+      payload = raw ? JSON.parse(raw) as T & ApiErrorResponse : null;
+    } catch (parseError) {
+      throw new Error(
+        `APIレスポンスをJSONとして解析できません\nendpoint=${url}\nstatus=${response.status}\nbody=${raw.slice(0, 1000)}`,
+        { cause: parseError },
+      );
+    }
+    if (!response.ok) {
+      const detail = [payload?.error, payload?.details, payload?.stack]
+        .filter(Boolean)
+        .join("\n");
+      throw new Error(detail || `APIエラー: HTTP ${response.status} (${url})`);
+    }
+    if (!payload) throw new Error(`APIレスポンスが空です: ${url}`);
+    return payload;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`処理がタイムアウトしました\nendpoint=${url}\ntimeoutMs=${timeoutMs}`, { cause: error });
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
 
 const nav: Array<{ id: View; label: string; icon: typeof Gauge }> = [
   { id: "dashboard", label: "ダッシュボード", icon: Gauge },
@@ -480,9 +516,7 @@ function FavoritesView({
     setLoadingMint(tokenMint);
     setMessage(null);
     try {
-      const response = await fetch(`/api/live/token-wallets?mint=${encodeURIComponent(tokenMint)}`, { cache: "no-store" });
-      const payload = await response.json() as FavoriteWalletScanResponse & { error?: string };
-      if (!response.ok) throw new Error(payload.error ?? "ウォレット分析に失敗しました");
+      const payload = await requestJson<FavoriteWalletScanResponse>(`/api/live/token-wallets?mint=${encodeURIComponent(tokenMint)}`, 120_000);
       setWalletResults(current => ({ ...current, [tokenMint]: payload }));
     } catch (scanError) {
       setMessage(scanError instanceof Error ? scanError.message : "ウォレット分析に失敗しました");
@@ -515,7 +549,7 @@ function FavoritesView({
             {adding ? "実データ取得中…" : "お気に入りに登録"}
           </button>
         </div>
-        {message && <p className={`px-5 pb-5 text-xs ${message.includes("登録しました") ? "text-emerald-300" : "text-amber-300"}`}>{message}</p>}
+        {message && <p className={`whitespace-pre-wrap break-all px-5 pb-5 text-xs leading-relaxed ${message.includes("登録しました") ? "text-emerald-300" : "text-amber-300"}`}>{message}</p>}
       </Card>
       {favorites.length ? (
         <div className="grid gap-3 lg:grid-cols-2">
@@ -931,9 +965,7 @@ export function TradingApp() {
     setScanning(true);
     setError(null);
     try {
-      const response = await fetch("/api/live/scan", { cache: "no-store" });
-      const payload = await response.json() as WalletScanResponse & { error?: string };
-      if (!response.ok) throw new Error(payload.error ?? "スキャンに失敗しました");
+      const payload = await requestJson<WalletScanResponse>("/api/live/scan", 120_000);
       setScanResult(payload);
       setWallets(current => {
         const manual = current.filter(wallet => wallet.origin === "MANUAL");
@@ -963,9 +995,7 @@ export function TradingApp() {
     if (!ADDRESS_PATTERN.test(mint)) return "SolanaのCAを確認してください";
     if (favorites.some(token => token.mint === mint)) return "このコインは登録済みです";
     try {
-      const response = await fetch(`/api/live/token?mint=${encodeURIComponent(mint)}`, { cache: "no-store" });
-      const payload = await response.json() as Omit<FavoriteToken, "addedAt"> & { error?: string };
-      if (!response.ok) throw new Error(payload.error ?? "コイン情報を取得できません");
+      const payload = await requestJson<Omit<FavoriteToken, "addedAt">>(`/api/live/token?mint=${encodeURIComponent(mint)}`, 60_000);
       setFavorites(current => [...current, { ...payload, addedAt: new Date().toISOString() }]);
       return null;
     } catch (favoriteError) {
@@ -1012,7 +1042,14 @@ export function TradingApp() {
         <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-white/[0.07] bg-[#080c0e]/85 px-4 backdrop-blur-xl md:px-6">
           <div className="flex items-center gap-3">
             <button onClick={() => setMobileOpen(true)} className="rounded-lg border border-white/10 p-2 lg:hidden"><Menu size={17} /></button>
-            <span className="text-sm font-medium">{currentTitle}</span>
+            <div className="flex items-center gap-2 lg:hidden">
+              <img src="/next-trade-icon.png" alt="" className="h-8 w-8 rounded-lg object-contain" />
+              <div>
+                <p className="text-xs font-bold tracking-[.1em] text-white">NEXT-TRADE</p>
+                <p className="text-[9px] text-[#64747a]">{currentTitle}</p>
+              </div>
+            </div>
+            <span className="hidden text-sm font-medium lg:inline">{currentTitle}</span>
           </div>
           <div className="flex items-center gap-3">
             <div className="hidden text-right sm:block"><p className="text-[10px] text-[#64747a]">仮想残高</p><p className="text-sm font-semibold tabular-nums">{money(paperBalance)}</p></div>
@@ -1020,7 +1057,7 @@ export function TradingApp() {
           </div>
         </header>
         <main className="mx-auto max-w-[1500px] p-4 md:p-6">
-          {error && <div className="mb-4 flex items-start gap-3 rounded-xl border border-rose-400/20 bg-rose-400/[0.07] p-4 text-sm text-rose-200"><X size={17} className="mt-0.5 shrink-0" /><span className="flex-1">{error}</span><button onClick={() => setError(null)} className="text-xs">閉じる</button></div>}
+          {error && <div className="mb-4 flex items-start gap-3 rounded-xl border border-rose-400/20 bg-rose-400/[0.07] p-4 text-sm text-rose-200"><X size={17} className="mt-0.5 shrink-0" /><span className="min-w-0 flex-1 whitespace-pre-wrap break-all leading-relaxed">{error}</span><button onClick={() => setError(null)} className="text-xs">閉じる</button></div>}
           <div className="mb-4 flex flex-wrap gap-2 text-[11px]">
             <Badge tone="green"><ShieldCheck size={12} className="mr-1" />実ウォレットデータのみ</Badge>
             <Badge tone="amber"><CircleDollarSign size={12} className="mr-1" />資金はデモ</Badge>

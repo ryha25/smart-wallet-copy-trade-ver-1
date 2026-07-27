@@ -69,8 +69,22 @@ function rpcEndpoint() {
       source: "HELIUS_RPC" as const,
     };
   }
+  const configuredUrl = env("SOLANA_RPC_URL") || env("NEXT_PUBLIC_SOLANA_RPC_URL");
+  if (configuredUrl) {
+    try {
+      const parsed = new URL(configuredUrl);
+      if (!["http:", "https:"].includes(parsed.protocol)) throw new Error(`unsupported protocol: ${parsed.protocol}`);
+      return { url: parsed.toString(), source: "SOLANA_PUBLIC_RPC" as const };
+    } catch (error) {
+      console.error("[NEXT-TRADE][rpc.config] Invalid RPC URL; falling back to public RPC", {
+        configuredValue: configuredUrl,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    }
+  }
   return {
-    url: env("SOLANA_RPC_URL") || env("NEXT_PUBLIC_SOLANA_RPC_URL") || "https://api.mainnet-beta.solana.com",
+    url: "https://api.mainnet-beta.solana.com",
     source: "SOLANA_PUBLIC_RPC" as const,
   };
 }
@@ -80,7 +94,7 @@ async function rpc<T>(method: string, params: unknown[]): Promise<T> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-    cache: "no-store",
+    signal: AbortSignal.timeout(60_000),
   });
   if (!response.ok) throw new Error(`Solana RPC error: ${response.status}`);
   const payload = await response.json() as { result?: T; error?: { message?: string } };
@@ -175,7 +189,6 @@ async function solPriceHistory(from: number, to: number) {
   url.searchParams.set("time_to", String(to));
   const response = await fetch(url, {
     headers: { "X-API-KEY": key, "x-chain": "solana", accept: "application/json" },
-    cache: "no-store",
   });
   if (!response.ok) return [];
   const payload = await response.json() as { data?: { items?: Array<{ unixTime: number; value: number }> } };
@@ -219,12 +232,29 @@ function valueSwaps(
 export async function getTokenQuotes(mints: string[]): Promise<Map<string, LiveTokenQuote>> {
   const unique = [...new Set(mints)].filter(Boolean).slice(0, 30);
   if (!unique.length) return new Map();
-  const response = await fetch(`https://api.dexscreener.com/tokens/v1/solana/${unique.join(",")}`, {
+  const dexScreenerUrl = `https://api.dexscreener.com/tokens/v1/solana/${unique.map(encodeURIComponent).join(",")}`;
+  console.info("[NEXT-TRADE][dexscreener] request", { mints: unique, url: dexScreenerUrl });
+  const response = await fetch(dexScreenerUrl, {
     headers: { accept: "application/json" },
-    cache: "no-store",
+    signal: AbortSignal.timeout(45_000),
   });
-  if (!response.ok) throw new Error(`DEX Screener error: ${response.status}`);
-  const pairs = await response.json() as Array<{
+  const rawResponse = await response.text();
+  console.info("[NEXT-TRADE][dexscreener] raw response", {
+    status: response.status,
+    statusText: response.statusText,
+    body: rawResponse,
+  });
+  if (!response.ok) throw new Error(`DexScreener API error: HTTP ${response.status} ${response.statusText}; body=${rawResponse.slice(0, 1000)}`);
+  let parsedResponse: unknown;
+  try {
+    parsedResponse = JSON.parse(rawResponse);
+  } catch (error) {
+    throw new Error(`DexScreener APIのJSON解析に失敗しました: ${rawResponse.slice(0, 1000)}`, { cause: error });
+  }
+  if (!Array.isArray(parsedResponse)) {
+    throw new Error(`DexScreener APIのレスポンス形式が不正です: ${rawResponse.slice(0, 1000)}`);
+  }
+  const pairs = parsedResponse as Array<{
     dexId?: string;
     url?: string;
     baseToken?: { address?: string; name?: string; symbol?: string };
@@ -234,6 +264,10 @@ export async function getTokenQuotes(mints: string[]): Promise<Map<string, LiveT
     marketCap?: number | null;
     fdv?: number | null;
   }>;
+  if (pairs.length === 0) {
+    console.warn("[NEXT-TRADE][dexscreener] pairs is empty", { mints: unique, url: dexScreenerUrl });
+    return new Map();
+  }
   const result = new Map<string, LiveTokenQuote>();
   for (const pair of pairs) {
     const mint = pair.baseToken?.address;
@@ -262,7 +296,6 @@ export async function getTokenRisk(mint: string): Promise<TokenRiskCheck> {
     rpc<ParsedMintAccount>("getAccountInfo", [mint, { encoding: "jsonParsed", commitment: "confirmed" }]).catch(() => null),
     fetch(`https://api.rugcheck.xyz/v1/tokens/${encodeURIComponent(mint)}/report/summary`, {
       headers: { accept: "application/json" },
-      cache: "no-store",
     }).catch(() => null),
   ]);
   const info = mintAccount?.value?.data?.parsed?.info;
@@ -602,7 +635,6 @@ export async function getJupiterPaperQuote(inputMint: string, amountUsd: number,
   url.searchParams.set("slippageBps", String(Math.max(1, Math.round(slippageBps))));
   const response = await fetch(url, {
     headers: { "x-api-key": key, accept: "application/json" },
-    cache: "no-store",
   });
   if (!response.ok) throw new Error(`Jupiter quote error: ${response.status}`);
   const payload = await response.json() as { outAmount?: string; priceImpactPct?: string; routePlan?: unknown[] };

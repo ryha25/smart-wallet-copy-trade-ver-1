@@ -3,13 +3,23 @@
 ## Replitで起動・デプロイ
 
 1. GitHubリポジトリをReplitへインポートします。
-2. ReplitのSecretsに必要なAPIキーを登録します（最低限 `HELIUS_API_KEY` を推奨）。
+2. ReplitのSecretsに必要なAPIキーとログイン設定を登録します。
 3. Runボタンを押すと、NEXT-TRADEがポート8080で起動します。
 4. PublishingからAutoscale Deploymentを選び、Publishします。
 
 Replitでは `.replit` の設定により、開発時は `replit:dev`、公開時は
 `replit:build` と `replit:start` が自動実行されます。サーバーは
 `0.0.0.0:8080` で待ち受けます。
+
+ログインには次のSecretsが必須です。
+
+- `APP_USERNAME`: ログイン画面のユーザー名
+- `APP_PASSCODE`: 6文字のパスコード
+- `SESSION_SECRET`: 十分に長いランダム文字列
+
+実データ取得には最低限 `HELIUS_API_KEY` を推奨します。詳細なStackTraceを
+Previewで確認する場合だけ `DEBUG_ERRORS=true` を設定してください。本番公開時は
+`DEBUG_ERRORS=false` に戻してください。
 
 Solana上の実在ウォレットと実市場データを分析し、コピー取引を仮想資金で検証する日本語Webアプリです。実資金の注文は送信しません。
 

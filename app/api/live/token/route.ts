@@ -1,18 +1,30 @@
+import { PublicKey } from "@solana/web3.js";
+import { apiError } from "../../../lib/api-errors";
+import { requireAppSession } from "../../../lib/app-auth";
 import { getTokenQuotes } from "../../../services/solana-live";
 
 export async function GET(request: Request) {
-  const mint = new URL(request.url).searchParams.get("mint")?.trim() ?? "";
-  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) {
-    return Response.json({ error: "SolanaのCAを確認してください" }, { status: 400 });
-  }
   try {
+    const unauthorized = await requireAppSession(request);
+    if (unauthorized) return unauthorized;
+
+    const mint = new URL(request.url, "http://localhost").searchParams.get("mint")?.trim() ?? "";
+    console.info("[NEXT-TRADE][favorite.token] input CA", { mint });
+    try {
+      new PublicKey(mint);
+    } catch (publicKeyError) {
+      throw new Error(`CAをPublicKeyとして解析できません: ${mint}`, { cause: publicKeyError });
+    }
+
     const quote = (await getTokenQuotes([mint])).get(mint);
     if (!quote) {
-      return Response.json({ error: "DEX上の実データを取得できないため登録できません" }, { status: 404 });
+      return Response.json(
+        { error: "DexScreenerで取引ペアが見つかりません", details: `mint=${mint}, pairs=empty` },
+        { status: 404 },
+      );
     }
     return Response.json(quote, { headers: { "cache-control": "no-store" } });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "コイン情報の取得に失敗しました";
-    return Response.json({ error: message }, { status: 500 });
+    return Response.json(apiError(error, "favorite.token"), { status: 400 });
   }
 }

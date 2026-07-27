@@ -1,6 +1,17 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src/**/*"],
+  "include": [
+    "src/App.tsx",
+    "src/main.tsx",
+    "src/components/trading-app.tsx",
+    "src/components/login-gate.tsx",
+    "src/lib/default-settings.ts",
+    "src/lib/live-types.ts",
+    "src/lib/paper-trading.ts",
+    "src/lib/types.ts",
+    "src/index.css",
+    "vite.config.ts"
+  ],
   "exclude": ["node_modules", "build", "dist", "**/*.test.ts"],
   "compilerOptions": {
     "noEmit": true,
@@ -13,10 +24,5 @@
     "paths": {
       "@/*": ["./src/*"]
     }
-  },
-  "references": [
-    {
-      "path": "../../lib/api-client-react"
-    }
-  ]
+  }
 }

@@ -1,6 +1,6 @@
 kind = "web"
 previewPath = "/"
-title = "NEXUS Smart Wallet"
+title = "NEXT-TRADE"
 version = "1.0.0"
 id = "artifacts/nexus"
 router = "path"

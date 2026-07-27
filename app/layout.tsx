@@ -8,8 +8,8 @@ export const metadata: Metadata = {
   applicationName: "NEXT-TRADE",
   manifest: "/site.webmanifest",
   icons: {
-    icon: "/icon-192.png",
-    apple: "/apple-touch-icon.png",
+    icon: "/icon-192.png?v=3",
+    apple: "/apple-touch-icon.png?v=3",
   },
 };
 
