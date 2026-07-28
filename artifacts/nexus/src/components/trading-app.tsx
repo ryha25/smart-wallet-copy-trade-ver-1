@@ -235,12 +235,14 @@ function Dashboard({
   activities,
   skipped,
   lastRefresh,
+  onClose,
 }: {
   wallets: TrackedWallet[];
   positions: LivePaperPosition[];
   activities: ActivityByWallet;
   skipped: SkippedPaperTrade[];
   lastRefresh: string | null;
+  onClose: (position: LivePaperPosition, reason: string) => void;
 }) {
   const open = positions.filter(position => position.status === "OPEN");
   const closed = positions.filter(position => position.status === "CLOSED" && position.exitPriceUsd);
@@ -283,9 +285,23 @@ function Dashboard({
                       <p className="font-semibold">{position.symbol}</p>
                       <p className="truncate font-mono text-[10px] text-[#66767c]">{shortAddress(position.wallet)}</p>
                     </div>
-                    <div className={`text-right tabular-nums ${pnl.pnlUsd >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>
-                      <p className="text-sm font-semibold">{money(pnl.pnlUsd, true)}</p>
-                      <p className="text-xs">{pct(pnl.pnlPct)}</p>
+                    <div className="flex shrink-0 flex-col items-end">
+                      <div className={`text-right tabular-nums ${pnl.pnlUsd >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>
+                        <p className="text-sm font-semibold">{money(pnl.pnlUsd, true)}</p>
+                        <p className="text-xs">{pct(pnl.pnlPct)}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`${position.symbol}を現在価格で手動決済しますか？`)) {
+                            onClose(position, "手動決済");
+                          }
+                        }}
+                        className="mt-2 min-h-9 rounded-lg border border-rose-400/25 bg-rose-400/[0.08] px-3 text-xs font-semibold text-rose-300 transition hover:bg-rose-400/[0.14]"
+                        aria-label={`${position.symbol}を手動決済`}
+                      >
+                        手動決済
+                      </button>
                     </div>
                   </div>
                 );
@@ -1316,7 +1332,7 @@ export function TradingApp() {
             <Badge tone="amber"><CircleDollarSign size={12} className="mr-1" />資金はデモ</Badge>
             <Badge tone="gray">手動10件 + 自動5件</Badge>
           </div>
-          {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} />}
+          {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} onClose={closePosition} />}
           {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={address => setWallets(current => current.filter(wallet => wallet.address !== address))} onToggle={(address, enabled) => setWallets(current => current.map(wallet => wallet.address === address ? { ...wallet, enabled } : wallet))} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
           {view === "scanner" && <Scanner result={scanResult} scanState={scanState} scanning={scanState?.status === "RUNNING"} wallets={wallets} autoCount={wallets.filter(wallet => wallet.origin === "AUTO").length} onScan={scan} onAddCandidate={addScanCandidate} />}
           {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} />}
