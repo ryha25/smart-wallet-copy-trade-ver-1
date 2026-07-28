@@ -38,6 +38,8 @@ export type WalletScore = {
   realizedProfitUsd: number;
   winRate: number;
   swaps30d: number;
+  activeTradingDays: number;
+  avgTradesPerDay: number;
   sellEvents: number;
   closedTrades: number;
   ageDays: number;

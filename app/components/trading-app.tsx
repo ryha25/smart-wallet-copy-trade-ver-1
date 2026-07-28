@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import {
   Activity,
+  ChevronDown,
   CircleDollarSign,
   Gauge,
   Menu,
@@ -217,8 +218,9 @@ function Field({
 
 function ScorePanel({ score }: { score: WalletScore }) {
   return (
-    <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-5">
       <div><span className="text-[#718188]">スコア</span><p className="mt-1 text-lg font-semibold text-white">{score.score}<span className="text-xs text-[#718188]"> / 100</span></p></div>
+      <div><span className="text-[#718188]">1日平均取引</span><p className="mt-1 text-lg font-semibold text-[#38e7ae]">{(score.avgTradesPerDay ?? 0).toFixed(2)}回</p><span className="text-[10px] text-[#617076]">稼働 {score.activeTradingDays ?? 0}日</span></div>
       <div><span className="text-[#718188]">30日ROI</span><p className={`mt-1 text-lg font-semibold ${score.roi30d >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>{pct(score.roi30d)}</p></div>
       <div><span className="text-[#718188]">確定利益</span><p className="mt-1 text-lg font-semibold text-white">{money(score.realizedProfitUsd, true)}</p></div>
       <div><span className="text-[#718188]">勝率</span><p className="mt-1 text-lg font-semibold text-white">{score.winRate.toFixed(1)}%</p></div>
@@ -753,19 +755,162 @@ function ActivityView({
   );
 }
 
+type HistoryPanel = "paper" | "source" | "skipped" | "recent";
+
+function HistoryAccordion({
+  title,
+  count,
+  note,
+  open,
+  onToggle,
+  renderContent,
+}: {
+  title: string;
+  count: number;
+  note: string;
+  open: boolean;
+  onToggle: () => void;
+  renderContent: () => React.ReactNode;
+}) {
+  return (
+    <Card className="mt-3 overflow-hidden">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+        className="flex w-full items-center gap-3 px-4 py-4 text-left sm:px-5"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-white">{title}</h2>
+            <Badge tone="gray">{count}件</Badge>
+          </div>
+          <p className="mt-1 truncate text-[11px] text-[#718188]">{note}</p>
+        </div>
+        <ChevronDown size={18} className={`shrink-0 text-[#718188] transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && <div className="border-t border-white/[0.07]">{renderContent()}</div>}
+    </Card>
+  );
+}
+
+function MobileActivityView({
+  activities,
+  positions,
+  skipped,
+  onClose,
+}: {
+  activities: ActivityByWallet;
+  positions: LivePaperPosition[];
+  skipped: SkippedPaperTrade[];
+  onClose: (position: LivePaperPosition, reason: string) => void;
+}) {
+  const [openPanels, setOpenPanels] = useState<Record<HistoryPanel, boolean>>({
+    paper: false,
+    source: false,
+    skipped: false,
+    recent: false,
+  });
+  const sourceCount = Object.values(activities).reduce((sum, activity) => sum + activity.events.length, 0);
+  const needsEvents = openPanels.source || openPanels.recent;
+  const events = useMemo(() => needsEvents
+    ? Object.values(activities)
+      .flatMap(activity => activity.events.map(event => ({ ...event, wallet: activity.address })))
+      .sort((a, b) => b.blockTime - a.blockTime)
+    : [], [activities, needsEvents]);
+  const toggle = (panel: HistoryPanel) =>
+    setOpenPanels(current => ({ ...current, [panel]: !current[panel] }));
+
+  const renderEvent = (event: LiveWalletEvent & { wallet: string }) => (
+    <div key={`${event.signature}-${event.mint}`} className="flex items-center gap-3 px-4 py-3 text-xs sm:px-5">
+      <Badge tone={event.side === "BUY" ? "green" : "red"}>{event.side === "BUY" ? "購入" : "売却"}</Badge>
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-semibold text-white">{event.current?.symbol ?? shortAddress(event.mint)}</p>
+        <p className="mt-1 truncate font-mono text-[10px] text-[#718188]">{shortAddress(event.wallet)}・{new Date(event.blockTime * 1000).toLocaleString("ja-JP")}</p>
+      </div>
+      <p className="shrink-0 text-right tabular-nums text-[#b8c3c7]">{event.sourcePriceUsd ? `$${event.sourcePriceUsd.toPrecision(5)}` : "算定不可"}</p>
+    </div>
+  );
+
+  return (
+    <>
+      <div className="mb-5">
+        <h1 className="text-xl font-semibold">実取引・ペーパー履歴</h1>
+        <p className="mt-1 text-sm text-[#7f9097]">項目をタップした時だけ一覧を描画します。初期状態はすべて閉じています。</p>
+      </div>
+      <HistoryAccordion
+        title="ペーパートレード"
+        count={positions.length}
+        note="仮想資金によるコピー結果"
+        open={openPanels.paper}
+        onToggle={() => toggle("paper")}
+        renderContent={() => positions.length ? (
+          <div className="divide-y divide-white/[0.07]">{[...positions].reverse().map(position => {
+            const price = position.status === "CLOSED" ? position.exitPriceUsd ?? position.currentPriceUsd : position.currentPriceUsd;
+            const result = calculatePaperPnl(position.copyPriceUsd, price, position.amountUsd);
+            return (
+              <div key={position.id} className="px-4 py-4 text-xs sm:px-5">
+                <div className="flex items-center gap-2"><Badge tone={position.status === "OPEN" ? "green" : "gray"}>{position.status === "OPEN" ? "保有中" : "決済済み"}</Badge><span className="font-semibold">{position.symbol}</span><span className="ml-auto font-mono text-[#718188]">{shortAddress(position.wallet)}</span></div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-[#87969b]"><span>仮想額 {money(position.amountUsd)}</span><span className={result.pnlUsd >= 0 ? "text-[#38e7ae]" : "text-rose-300"}>損益 {money(result.pnlUsd, true)} / {pct(result.pnlPct)}</span></div>
+                <div className="mt-3 flex justify-end">{position.status === "OPEN" ? <button onClick={() => onClose(position, "手動決済")} className="text-rose-300">手動決済</button> : <span className="text-[#718188]">{position.exitReason}</span>}</div>
+              </div>
+            );
+          })}</div>
+        ) : <EmptyState title="ペーパートレード履歴はありません" detail="新規購入を検知して条件を通過した場合だけ作成します。" />}
+      />
+      <HistoryAccordion
+        title="コピー元の実取引"
+        count={sourceCount}
+        note="登録したコピー元の全取得取引"
+        open={openPanels.source}
+        onToggle={() => toggle("source")}
+        renderContent={() => events.length ? <div className="divide-y divide-white/[0.07]">{events.map(renderEvent)}</div> : <EmptyState title="コピー元の実取引は未取得です" detail="コピー元画面からデータ更新を実行してください。" />}
+      />
+      <HistoryAccordion
+        title="見送り履歴"
+        count={skipped.length}
+        note="条件に合わずコピーしなかった実シグナル"
+        open={openPanels.skipped}
+        onToggle={() => toggle("skipped")}
+        renderContent={() => skipped.length ? (
+          <div className="divide-y divide-white/[0.07]">{[...skipped].reverse().map(item => (
+            <div key={item.id} className="px-4 py-4 text-xs sm:px-5">
+              <div className="flex items-center gap-2"><Badge tone="amber">見送り</Badge><span className="font-semibold">{item.symbol}</span><span className="ml-auto font-mono text-[#718188]">{shortAddress(item.wallet)}</span></div>
+              <p className="mt-2 text-[#a4b0b4]">{item.reason}</p>
+            </div>
+          ))}</div>
+        ) : <EmptyState title="見送り履歴はありません" detail="新規購入が条件外だった場合に記録されます。" />}
+      />
+      <HistoryAccordion
+        title="直近の実ウォレット取引"
+        count={Math.min(sourceCount, 10)}
+        note="新しい順に最大10件"
+        open={openPanels.recent}
+        onToggle={() => toggle("recent")}
+        renderContent={() => events.length ? <div className="divide-y divide-white/[0.07]">{events.slice(0, 10).map(renderEvent)}</div> : <EmptyState title="直近取引は未取得です" detail="コピー元の実取引を更新してください。" />}
+      />
+    </>
+  );
+}
+
 function SettingsView({ settings, onChange }: { settings: CopySettings; onChange: (settings: CopySettings) => void }) {
   const update = <K extends keyof CopySettings>(key: K, value: CopySettings[K]) => onChange({ ...settings, [key]: value });
   const numberFields: Array<[keyof CopySettings, string, string]> = [
     ["amountPerTrade", "1取引の仮想購入額", "USD"],
     ["maxPositions", "最大同時保有数", "件"],
     ["maxDailyAmount", "1日の最大仮想購入額", "USD"],
-    ["stopLoss", "損切り率", "%"],
-    ["takeProfit", "利確率", "%"],
     ["maxSlippage", "最大スリッページ", "%"],
-    ["minLiquidity", "最低流動性", "USD"],
-    ["minMarketCap", "最低時価総額", "USD"],
     ["maxDetectionSeconds", "コピー可能な検知遅延", "秒"],
-    ["maxPriceRise", "見送る価格上昇率", "%"],
+  ];
+  const conditionalFields: Array<{
+    enabledKey: "stopLossEnabled" | "takeProfitEnabled" | "maxPriceRiseEnabled";
+    valueKey: "stopLoss" | "takeProfit" | "maxPriceRise";
+    label: string;
+    detail: string;
+  }> = [
+    { enabledKey: "stopLossEnabled", valueKey: "stopLoss", label: "損切り率", detail: "OFFの場合は自動損切りしません" },
+    { enabledKey: "takeProfitEnabled", valueKey: "takeProfit", label: "利確率", detail: "OFFの場合は自動利確しません" },
+    { enabledKey: "maxPriceRiseEnabled", valueKey: "maxPriceRise", label: "見送る価格上昇率", detail: "OFFの場合は購入後の上昇率で見送りません" },
   ];
   return (
     <>
@@ -783,6 +928,17 @@ function SettingsView({ settings, onChange }: { settings: CopySettings; onChange
           <div className="grid gap-4 sm:grid-cols-2">
             {numberFields.map(([key, label, suffix]) => (
               <Field key={key} type="number" label={label} value={settings[key] as number} suffix={suffix} onChange={value => update(key, Number(value) as never)} />
+            ))}
+          </div>
+          <div className="mt-6 space-y-3">
+            {conditionalFields.map(field => (
+              <div key={field.enabledKey} className="rounded-xl border border-white/10 bg-[#0a0f11] p-4">
+                <div className="mb-4 flex items-center justify-between gap-4">
+                  <div><p className="text-sm font-semibold">{field.label}</p><p className="mt-1 text-xs text-[#718188]">{field.detail}</p></div>
+                  <Toggle checked={settings[field.enabledKey]} onChange={value => update(field.enabledKey, value)} label={field.label} />
+                </div>
+                <Field type="number" label={`${field.label}の値`} value={settings[field.valueKey]} suffix="%" onChange={value => update(field.valueKey, Number(value))} />
+              </div>
             ))}
           </div>
           <div className="mt-6 flex items-center justify-between rounded-xl border border-white/10 bg-[#0a0f11] p-4">
@@ -833,7 +989,7 @@ export function TradingApp() {
     setPositions(load(STORAGE.positions, []));
     setSkipped(load(STORAGE.skipped, []));
     setFavorites(load(STORAGE.favorites, []));
-    setSettings(load(STORAGE.settings, defaultSettings));
+    setSettings({ ...defaultSettings, ...load<Partial<CopySettings>>(STORAGE.settings, {}) });
     processedRef.current = new Set(load<string[]>(STORAGE.processed, []));
     setHydrated(true);
   }, []);
@@ -882,8 +1038,6 @@ export function TradingApp() {
       sourcePrice: event.sourcePriceUsd,
       currentPrice: event.current.priceUsd,
       detectedAfterSeconds: delay,
-      liquidityUsd: event.current.liquidityUsd,
-      marketCapUsd: event.current.marketCapUsd,
     }, settingsRef.current, {
       openPositions: positionsRef.current.filter(position => position.status === "OPEN").length,
       spentTodayUsd: spentToday,
@@ -947,10 +1101,10 @@ export function TradingApp() {
         if (!currentEvent?.current) return position;
         const updated = { ...position, currentPriceUsd: currentEvent.current.priceUsd };
         const pnl = calculatePaperPnl(updated.copyPriceUsd, updated.currentPriceUsd, updated.amountUsd);
-        if (pnl.pnlPct >= settingsRef.current.takeProfit) {
+        if (settingsRef.current.takeProfitEnabled && pnl.pnlPct >= settingsRef.current.takeProfit) {
           return { ...updated, status: "CLOSED", closedAt: new Date().toISOString(), exitPriceUsd: updated.currentPriceUsd, exitReason: "利確" };
         }
-        if (pnl.pnlPct <= -settingsRef.current.stopLoss) {
+        if (settingsRef.current.stopLossEnabled && pnl.pnlPct <= -settingsRef.current.stopLoss) {
           return { ...updated, status: "CLOSED", closedAt: new Date().toISOString(), exitPriceUsd: updated.currentPriceUsd, exitReason: "損切り" };
         }
         return updated;
@@ -1115,7 +1269,7 @@ export function TradingApp() {
           {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={address => setWallets(current => current.filter(wallet => wallet.address !== address))} onToggle={(address, enabled) => setWallets(current => current.map(wallet => wallet.address === address ? { ...wallet, enabled } : wallet))} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
           {view === "scanner" && <Scanner result={scanResult} scanning={scanning} wallets={wallets} autoCount={wallets.filter(wallet => wallet.origin === "AUTO").length} onScan={scan} onAddCandidate={addScanCandidate} />}
           {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} />}
-          {view === "activity" && <ActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}
+          {view === "activity" && <MobileActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}
           {view === "settings" && <SettingsView settings={settings} onChange={setSettings} />}
         </main>
       </div>

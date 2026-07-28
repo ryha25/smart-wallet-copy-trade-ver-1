@@ -4,8 +4,6 @@ export type CopySignal = {
   sourcePrice: number | null;
   currentPrice: number;
   detectedAfterSeconds: number;
-  liquidityUsd: number;
-  marketCapUsd: number;
 };
 
 export function evaluateCopySignal(
@@ -14,13 +12,11 @@ export function evaluateCopySignal(
   state: { openPositions: number; spentTodayUsd: number; alreadyHolding: boolean; walletEnabled: boolean },
 ) {
   if (!settings.enabled || !state.walletEnabled) return { accepted: false, reason: "コピー対象外" };
-  if (signal.liquidityUsd < settings.minLiquidity) return { accepted: false, reason: "流動性不足" };
-  if (signal.marketCapUsd < settings.minMarketCap) return { accepted: false, reason: "最低時価総額未満" };
   if (signal.detectedAfterSeconds > settings.maxDetectionSeconds) return { accepted: false, reason: "検知遅延超過" };
   if (state.openPositions >= settings.maxPositions) return { accepted: false, reason: "最大保有数到達" };
   if (state.spentTodayUsd + settings.amountPerTrade > settings.maxDailyAmount) return { accepted: false, reason: "1日上限到達" };
   if (state.alreadyHolding && !settings.allowDuplicate) return { accepted: false, reason: "同一コイン保有中" };
-  if (signal.sourcePrice && signal.sourcePrice > 0) {
+  if (settings.maxPriceRiseEnabled && signal.sourcePrice && signal.sourcePrice > 0) {
     const rise = ((signal.currentPrice - signal.sourcePrice) / signal.sourcePrice) * 100;
     if (rise >= settings.maxPriceRise) return { accepted: false, reason: "価格上昇済み" };
   }

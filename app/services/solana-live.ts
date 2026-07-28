@@ -464,6 +464,8 @@ function closeTrades(events: LiveWalletEvent[]) {
 function scoreWallet(address: string, events: LiveWalletEvent[], ageDays: number, evaluatedTransactions: number): WalletScore {
   const closed = closeTrades(events);
   const sellEvents = events.filter(event => event.side === "SELL").length;
+  const activeTradingDays = new Set(events.filter(event => event.blockTime > 0).map(event => Math.floor(event.blockTime / 86400))).size;
+  const avgTradesPerDay = events.length / 30;
   const realizedProfitUsd = closed.reduce((sum, trade) => sum + trade.pnl, 0);
   const cost = closed.reduce((sum, trade) => sum + trade.cost, 0);
   const roi30d = cost > 0 ? realizedProfitUsd / cost * 100 : 0;
@@ -489,16 +491,20 @@ function scoreWallet(address: string, events: LiveWalletEvent[], ageDays: number
   const concentration = positiveProfit > 0 ? Math.max(0, ...profitByMint.values()) / positiveProfit : 1;
 
   let score = 0;
-  score += Math.min(25, Math.max(0, roi30d / 60 * 25));
-  score += Math.min(15, Math.max(0, Math.log10(Math.max(1, realizedProfitUsd)) / 4 * 15));
+  // Daily frequency is the largest single component. Active-day coverage and
+  // profitable weeks prevent one burst of bot-like activity from ranking high.
+  score += Math.min(30, Math.max(0, avgTradesPerDay / 3 * 30));
+  score += Math.min(10, activeTradingDays / 20 * 10);
+  score += Math.min(10, profitableWeeks / 4 * 10);
   score += Math.min(15, Math.max(0, winRate / 60 * 15));
-  score += Math.min(15, profitableWeeks / 4 * 15);
-  score += Math.max(0, 10 - maxDrawdownPct / 3);
-  score += Math.min(10, events.length / 20 * 10);
+  score += Math.min(10, Math.max(0, roi30d / 60 * 10));
+  score += Math.min(10, Math.max(0, Math.log10(Math.max(1, realizedProfitUsd)) / 4 * 10));
+  score += Math.max(0, 5 - maxDrawdownPct / 6);
   score += Math.min(5, ageDays / 90 * 5);
+  score += Math.min(5, closed.length / 10 * 5);
   if (concentration > 0.8) score -= 12;
-  if (closed.length < 3) score -= 10;
-  score = Math.round(Math.max(0, Math.min(95, score)));
+  if (closed.length < 3) score -= 8;
+  score = Math.round(Math.max(0, Math.min(100, score)));
 
   const warnings: string[] = [];
   const blockers: string[] = [];
@@ -506,6 +512,8 @@ function scoreWallet(address: string, events: LiveWalletEvent[], ageDays: number
   if (realizedProfitUsd <= 0) warnings.push("30日確定利益がプラスではない");
   if (winRate < 60) warnings.push("勝率が60%未満");
   if (events.length < 20) warnings.push("30日売買件数が20件未満");
+  if (avgTradesPerDay < 1) warnings.push("1日平均取引回数が1回未満");
+  if (activeTradingDays < 10) warnings.push("取引日の継続性が不足");
   if (ageDays < 90) warnings.push("初回取引から90日未満");
   if (sellEvents === 0) blockers.push("売却履歴なし");
   if (closed.length < 3) warnings.push("複数の決済実績が不足");
@@ -521,6 +529,8 @@ function scoreWallet(address: string, events: LiveWalletEvent[], ageDays: number
     realizedProfitUsd: Number(realizedProfitUsd.toFixed(2)),
     winRate: Number(winRate.toFixed(2)),
     swaps30d: events.length,
+    activeTradingDays,
+    avgTradesPerDay: Number(avgTradesPerDay.toFixed(2)),
     sellEvents,
     closedTrades: closed.length,
     ageDays,
@@ -703,6 +713,8 @@ export async function scanProfitableWallets(): Promise<WalletScanResponse> {
 
   const ranked = analyzed.map(item => item.score).sort((a, b) =>
     b.score - a.score
+    || b.avgTradesPerDay - a.avgTradesPerDay
+    || b.activeTradingDays - a.activeTradingDays
     || b.realizedProfitUsd - a.realizedProfitUsd
     || a.address.localeCompare(b.address),
   );
