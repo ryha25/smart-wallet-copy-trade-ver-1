@@ -1,5 +1,36 @@
 # NEXT-TRADE — Smart Wallet Copy Trade MVP
 
+## Ethereum / Base 実データスキャン
+
+Solanaに加えて、EthereumとBaseの優秀ウォレットランキングを実データだけで作成できます。
+スキャン画面上部のネットワークタブから切り替えてください。
+
+Replit Secretsまたは`.env.local`へ次を設定します。
+
+```env
+MORALIS_API_KEY="Moralis Data APIキー"
+ALCHEMY_API_KEY="Alchemy APIキー"
+EVM_SCAN_ANALYSIS_LIMIT="40"
+EVM_SCAN_AUTO_REFRESH_HOURS="6"
+```
+
+`MORALIS_API_KEY`は30日確定損益・売買回数・売却実績の取得、
+`ALCHEMY_API_KEY`はウォレットがEOAであり、DEX・プール・コントラクトではないことの確認に使用します。
+Alchemy以外のRPCを使う場合は、`ETHEREUM_RPC_URL`と`BASE_RPC_URL`を設定できます。
+キー未設定時にモックデータへ切り替わることはなく、画面に設定不足を表示します。
+
+解析対象トークンは既定の実在主要トークン各5件です。独自に変更する場合は、
+`EVM_ETH_DISCOVERY_TOKENS`と`EVM_BASE_DISCOVERY_TOKENS`へコントラクトアドレスをカンマ区切りで設定します。
+EVM採用候補はコピーOFFで保存されます。現バージョンのEVM機能はランキング・候補保存までで、
+自動ペーパートレード監視はまだ有効化されません。
+
+DB更新:
+
+```bash
+npx prisma generate
+npx prisma migrate deploy
+```
+
 ## Replitで起動・デプロイ
 
 1. GitHubリポジトリをReplitへインポートします。

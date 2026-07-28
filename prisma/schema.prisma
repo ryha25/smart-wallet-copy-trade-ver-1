@@ -303,6 +303,7 @@ model SystemLog {
 
 model WalletScanRun {
   id                    String              @id @default(cuid())
+  network               String              @default("SOLANA")
   status                WalletScanRunStatus @default(RUNNING)
   phase                 String
   message               String
@@ -315,19 +316,23 @@ model WalletScanRun {
   startedAt             DateTime            @default(now()) @map("started_at")
   completedAt           DateTime?           @map("completed_at")
   updatedAt             DateTime            @updatedAt @map("updated_at")
-  @@index([status, startedAt])
+  @@index([network, status, startedAt])
   @@index([completedAt])
   @@map("wallet_scan_runs")
 }
 
 model WalletAnalysisCache {
-  address               String   @id
+  id                    String   @id @default(cuid())
+  network               String   @default("SOLANA")
+  address               String
   score                 Json
   sources               String[] @default([])
   rankingEligible       Boolean  @default(false) @map("ranking_eligible")
   firstSeenAt           DateTime @default(now()) @map("first_seen_at")
   lastSeenAt            DateTime @default(now()) @map("last_seen_at")
   lastAnalyzedAt        DateTime @map("last_analyzed_at")
+  @@unique([network, address])
+  @@index([network, rankingEligible, lastAnalyzedAt])
   @@index([lastAnalyzedAt])
   @@map("wallet_analysis_cache")
 }

@@ -19,6 +19,7 @@ import {
 import { defaultSettings } from "../lib/default-settings";
 import { calculatePaperPnl, evaluateCopySignal } from "../lib/paper-trading";
 import type {
+  ChainNetwork,
   LivePaperPosition,
   FavoriteToken,
   FavoriteWalletScanResponse,
@@ -159,14 +160,15 @@ function Metric({
   );
 }
 
-function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (value: boolean) => void; label: string }) {
+function Toggle({ checked, onChange, label, disabled = false }: { checked: boolean; onChange: (value: boolean) => void; label: string; disabled?: boolean }) {
   return (
     <button
       type="button"
       aria-label={label}
       aria-pressed={checked}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative h-6 w-11 rounded-full border transition ${checked ? "border-[#38e7ae] bg-[#167456]" : "border-[#39474c] bg-[#20292d]"}`}
+      className={`relative h-6 w-11 rounded-full border transition disabled:cursor-not-allowed disabled:opacity-35 ${checked ? "border-[#38e7ae] bg-[#167456]" : "border-[#39474c] bg-[#20292d]"}`}
     >
       <span className={`absolute top-0.5 h-[18px] w-[18px] rounded-full bg-white transition ${checked ? "left-[21px]" : "left-0.5"}`} />
     </button>
@@ -224,7 +226,7 @@ function ScorePanel({ score }: { score: WalletScore }) {
       <div><span className="text-[#718188]">1日平均取引</span><p className="mt-1 text-lg font-semibold text-[#38e7ae]">{(score.avgTradesPerDay ?? 0).toFixed(2)}回</p><span className="text-[10px] text-[#617076]">稼働 {score.activeTradingDays ?? 0}日</span></div>
       <div><span className="text-[#718188]">30日ROI</span><p className={`mt-1 text-lg font-semibold ${score.roi30d >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>{pct(score.roi30d)}</p></div>
       <div><span className="text-[#718188]">確定利益</span><p className="mt-1 text-lg font-semibold text-white">{money(score.realizedProfitUsd, true)}</p></div>
-      <div><span className="text-[#718188]">含み益</span><p className={`mt-1 text-lg font-semibold ${(score.unrealizedProfitUsd ?? 0) >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>{money(score.unrealizedProfitUsd ?? 0, true)}</p></div>
+      <div><span className="text-[#718188]">含み益</span><p className={`mt-1 text-lg font-semibold ${(score.unrealizedProfitUsd ?? 0) >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>{score.unrealizedProfitUsd === null ? "対象外" : money(score.unrealizedProfitUsd ?? 0, true)}</p></div>
       <div><span className="text-[#718188]">勝率</span><p className="mt-1 text-lg font-semibold text-white">{score.winRate.toFixed(1)}%</p></div>
     </div>
   );
@@ -351,8 +353,8 @@ function Sources({
   activities: ActivityByWallet;
   busy: string | null;
   onAdd: (address: string, label: string) => string | null;
-  onDelete: (address: string) => void;
-  onToggle: (address: string, enabled: boolean) => void;
+  onDelete: (wallet: TrackedWallet) => void;
+  onToggle: (wallet: TrackedWallet, enabled: boolean) => void;
   onStopAll: () => void;
   onRefresh: (wallet: TrackedWallet, analyze?: boolean) => Promise<void>;
   onRefreshAll: () => Promise<void>;
@@ -417,21 +419,22 @@ function Sources({
               {wallets.map(wallet => {
                 const activity = activities[wallet.address];
                 return (
-                  <div key={wallet.address} className="p-5">
+                  <div key={`${wallet.network ?? "SOLANA"}:${wallet.address}`} className="p-5">
                     <div className="flex flex-wrap items-start gap-4">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="font-semibold">{wallet.label || shortAddress(wallet.address)}</h3>
                           <Badge tone={wallet.origin === "MANUAL" ? "gray" : "green"}>{wallet.origin === "MANUAL" ? "手動" : "採用候補"}</Badge>
+                          <Badge tone="gray">{wallet.network ?? "SOLANA"}</Badge>
                           {wallet.score && <Badge tone={wallet.score.qualified ? "green" : "amber"}>{wallet.score.score}点</Badge>}
                         </div>
                         <p className="mt-2 break-all font-mono text-[11px] text-[#718188]">{wallet.address}</p>
                         <p className="mt-2 text-[11px] text-[#59686e]">{activity ? `実取引 ${activity.events.length}件・${new Date(activity.fetchedAt).toLocaleString("ja-JP")}` : "実データ未取得"}</p>
                       </div>
                       <div className="flex items-center gap-3">
-                        <Toggle checked={wallet.enabled} onChange={value => onToggle(wallet.address, value)} label={`${wallet.label}の監視`} />
-                        <button title="更新と30日評価" onClick={() => void onRefresh(wallet, true)} disabled={busy === wallet.address} className="rounded-lg border border-white/10 p-2 text-[#89989e] hover:border-[#38e7ae] hover:text-[#38e7ae] disabled:opacity-40"><RefreshCw size={15} className={busy === wallet.address ? "animate-spin" : ""} /></button>
-                        <button title="削除" onClick={() => onDelete(wallet.address)} className="rounded-lg border border-white/10 p-2 text-[#89989e] hover:border-rose-400/50 hover:text-rose-300"><Trash2 size={15} /></button>
+                        <Toggle checked={wallet.enabled} onChange={value => onToggle(wallet, value)} disabled={(wallet.network ?? "SOLANA") !== "SOLANA"} label={`${wallet.label}の監視`} />
+                        <button title={(wallet.network ?? "SOLANA") === "SOLANA" ? "更新と30日評価" : "EVMペーパー監視は準備中"} onClick={() => void onRefresh(wallet, true)} disabled={busy === wallet.address || (wallet.network ?? "SOLANA") !== "SOLANA"} className="rounded-lg border border-white/10 p-2 text-[#89989e] hover:border-[#38e7ae] hover:text-[#38e7ae] disabled:opacity-40"><RefreshCw size={15} className={busy === wallet.address ? "animate-spin" : ""} /></button>
+                        <button title="削除" onClick={() => onDelete(wallet)} className="rounded-lg border border-white/10 p-2 text-[#89989e] hover:border-rose-400/50 hover:text-rose-300"><Trash2 size={15} /></button>
                       </div>
                     </div>
                     {wallet.score && <div className="mt-5 border-t border-white/[0.06] pt-4"><ScorePanel score={wallet.score} /></div>}
@@ -449,6 +452,8 @@ function Sources({
 type WalletSort = "score" | "realized" | "unrealized";
 
 function Scanner({
+  network,
+  onNetworkChange,
   result,
   scanState,
   scanning,
@@ -457,6 +462,8 @@ function Scanner({
   onScan,
   onAddCandidate,
 }: {
+  network: ChainNetwork;
+  onNetworkChange: (network: ChainNetwork) => void;
   result: WalletScanResponse | null;
   scanState: WalletScanState | null;
   scanning: boolean;
@@ -475,8 +482,9 @@ function Scanner({
       if (sortBy === "unrealized") {
         return (b.unrealizedProfitUsd ?? 0) - (a.unrealizedProfitUsd ?? 0) || b.score - a.score;
       }
-      return b.score - a.score
-        || b.avgTradesPerDay - a.avgTradesPerDay
+      return b.avgTradesPerDay - a.avgTradesPerDay
+        || b.score - a.score
+        || b.winRate - a.winRate
         || b.realizedProfitUsd - a.realizedProfitUsd;
     }).slice(0, 10);
   }, [result, sortBy]);
@@ -484,10 +492,32 @@ function Scanner({
 
   return (
     <>
+      <div className="mb-5 grid grid-cols-3 gap-2 rounded-xl border border-white/[0.08] bg-white/[0.025] p-1.5">
+        {([
+          ["SOLANA", "Solana"],
+          ["ETHEREUM", "Ethereum"],
+          ["BASE", "Base"],
+        ] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => onNetworkChange(value)}
+            className={`min-h-11 rounded-lg px-3 text-sm font-semibold transition ${
+              network === value ? "bg-[#38e7ae] text-[#06110d]" : "text-[#819097] hover:bg-white/[0.05] hover:text-white"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">優秀ウォレットスキャン</h1>
-          <p className="mt-1 text-sm text-[#7f9097]">複数DEXの実取引から候補を広く抽出し、30日確定損益で査定します。</p>
+          <p className="mt-1 text-sm text-[#7f9097]">
+            {network === "SOLANA"
+              ? "複数DEXの実取引から候補を広く抽出し、30日確定損益で査定します。"
+              : "Moralisの実取引・30日確定損益とRPCのEOA判定から査定します。"}
+          </p>
         </div>
         <button onClick={() => void onScan()} disabled={scanning} className="flex items-center gap-2 rounded-xl bg-[#38e7ae] px-5 py-3 text-sm font-semibold text-[#06110d] disabled:opacity-50">
           <Radar size={16} className={scanning ? "animate-spin" : ""} /> {scanning ? "実データを分析中…" : "今すぐスキャン"}
@@ -525,7 +555,7 @@ function Scanner({
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className="mr-1 text-xs text-[#718188]">並び替え</span>
         {([
-          ["score", "総合スコア"],
+          ["score", "総合（取引頻度優先）"],
           ["realized", "確定利益"],
           ["unrealized", "含み益"],
         ] as const).map(([value, label]) => (
@@ -562,7 +592,7 @@ function Scanner({
             {sortedWallets.map((wallet, index) => {
               const blockers = wallet.blockers ?? [];
               const warnings = wallet.warnings ?? (blockers.length ? [] : wallet.reasons ?? []);
-              const alreadyAdded = wallets.some(item => item.address === wallet.address);
+              const alreadyAdded = wallets.some(item => (item.network ?? "SOLANA") === network && item.address.toLowerCase() === wallet.address.toLowerCase());
               const topFive = index < 5;
               const canAdd = topFive && wallet.addable !== false && blockers.length === 0 && !alreadyAdded && autoCount < 5;
               return (
@@ -573,7 +603,7 @@ function Scanner({
                       <span className="text-xs text-[#59696f]">#{index + 1}</span>
                       <p className="font-mono text-xs text-[#cbd4d7]">{wallet.address}</p>
                     </div>
-                    <p className="mt-2 text-[11px] text-[#617076]">30日売買 {wallet.swaps30d}件・売却 {wallet.sellEvents ?? 0}件・決済 {wallet.closedTrades}件・経過 {wallet.ageDays}日・価格算定 {wallet.valuedEvents}件</p>
+                    <p className="mt-2 text-[11px] text-[#617076]">30日売買 {wallet.swaps30d}件・売却 {wallet.sellEvents ?? 0}件・決済 {wallet.closedTrades}件・経過 {wallet.ageDays === null ? "未取得" : `${wallet.ageDays}日`}・価格算定 {wallet.valuedEvents}件</p>
                     <p className="mt-1 text-[11px] text-[#526269]">検出元: {(wallet.sources ?? []).join("・") || "オンチェーン履歴"}</p>
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-2">
@@ -613,7 +643,9 @@ function Scanner({
         ) : !scanning && <EmptyState title="まだスキャン結果がありません" detail="実行すると実データの上位10件を査定します。候補追加後もコピーはOFFのままです。" />}
       </Card>
       <div className="mt-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-4 text-xs leading-6 text-amber-100/70">
-        Solana全履歴の完全走査ではありません。Jupiter・Raydium・Orca・Meteora・Pump.fun・PumpSwapの直近取引から重複を除外して候補を抽出し、設定された解析上限まで30日履歴を評価します。
+        {network === "SOLANA"
+          ? "Solana全履歴の完全走査ではありません。Jupiter・Raydium・Orca・Meteora・Pump.fun・PumpSwapの直近取引から重複を除外して候補を抽出し、設定された解析上限まで30日履歴を評価します。"
+          : "EVM全履歴の完全走査ではありません。設定された実トークンの上位トレーダーを重複除外し、確定損益を評価します。EVMのコピー監視はまだ開始せず、採用候補はコピーOFFで保存します。"}
       </div>
     </>
   );
@@ -1053,6 +1085,7 @@ function SettingsView({ settings, onChange }: { settings: CopySettings; onChange
 
 export function TradingApp() {
   const [view, setView] = useState<View>("dashboard");
+  const [scanNetwork, setScanNetwork] = useState<ChainNetwork>("SOLANA");
   const [mobileOpen, setMobileOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [wallets, setWallets] = useState<TrackedWallet[]>([]);
@@ -1061,8 +1094,8 @@ export function TradingApp() {
   const [positions, setPositions] = useState<LivePaperPosition[]>([]);
   const [skipped, setSkipped] = useState<SkippedPaperTrade[]>([]);
   const [settings, setSettings] = useState<CopySettings>(defaultSettings);
-  const [scanResult, setScanResult] = useState<WalletScanResponse | null>(null);
-  const [scanState, setScanState] = useState<WalletScanState | null>(null);
+  const [scanResults, setScanResults] = useState<Partial<Record<ChainNetwork, WalletScanResponse>>>({});
+  const [scanStates, setScanStates] = useState<Partial<Record<ChainNetwork, WalletScanState>>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
@@ -1076,11 +1109,17 @@ export function TradingApp() {
   useEffect(() => { settingsRef.current = settings; }, [settings]);
   useEffect(() => { positionsRef.current = positions; }, [positions]);
 
+  const scanState = scanStates[scanNetwork] ?? null;
+  const scanResult = scanResults[scanNetwork] ?? null;
+  const scanUrl = scanNetwork === "SOLANA" ? "/api/live/scan" : `/api/live/evm-scan?network=${scanNetwork}`;
+
   const syncScanState = useCallback(async () => {
-    const state = await requestJson<WalletScanState>("/api/live/scan", 30_000);
-    setScanState(state);
-    if (state.result) setScanResult(state.result);
-  }, []);
+    const network = scanNetwork;
+    const url = network === "SOLANA" ? "/api/live/scan" : `/api/live/evm-scan?network=${network}`;
+    const state = await requestJson<WalletScanState>(url, 30_000);
+    setScanStates(current => ({ ...current, [network]: state }));
+    if (state.result) setScanResults(current => ({ ...current, [network]: state.result! }));
+  }, [scanNetwork]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1104,7 +1143,7 @@ export function TradingApp() {
       });
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [scanState?.status, syncScanState]);
+  }, [scanNetwork, scanState?.status, syncScanState]);
 
   useEffect(() => {
     const load = <T,>(key: string, fallback: T): T => {
@@ -1215,6 +1254,10 @@ export function TradingApp() {
   }, [closePosition]);
 
   const refreshWallet = useCallback(async (wallet: TrackedWallet, analyze = false) => {
+    if ((wallet.network ?? "SOLANA") !== "SOLANA") {
+      setError("Ethereum／Baseの採用候補は現在ランキング保存のみです。EVMペーパートレード監視は次の実装で有効化します。");
+      return;
+    }
     setBusy(wallet.address);
     setError(null);
     try {
@@ -1261,7 +1304,7 @@ export function TradingApp() {
   }, [processNewEvent]);
 
   const refreshAll = useCallback(async () => {
-    for (const wallet of walletsRef.current.filter(item => item.enabled)) await refreshWallet(wallet);
+    for (const wallet of walletsRef.current.filter(item => item.enabled && (item.network ?? "SOLANA") === "SOLANA")) await refreshWallet(wallet);
   }, [refreshWallet]);
 
   useEffect(() => {
@@ -1287,9 +1330,10 @@ export function TradingApp() {
   const scan = async () => {
     setError(null);
     try {
-      const state = await requestJson<WalletScanState>("/api/live/scan", 30_000, { method: "POST" });
-      setScanState(state);
-      if (state.result) setScanResult(state.result);
+      const network = scanNetwork;
+      const state = await requestJson<WalletScanState>(scanUrl, 30_000, { method: "POST" });
+      setScanStates(current => ({ ...current, [network]: state }));
+      if (state.result) setScanResults(current => ({ ...current, [network]: state.result! }));
     } catch (scanError) {
       setError(scanError instanceof Error ? scanError.message : "スキャンに失敗しました");
     }
@@ -1303,16 +1347,18 @@ export function TradingApp() {
       return;
     }
     setWallets(current => {
-      if (current.some(wallet => wallet.address === score.address)) return current;
-      const autoCount = current.filter(wallet => wallet.origin === "AUTO").length;
+      const network = score.network ?? scanNetwork;
+      if (current.some(wallet => (wallet.network ?? "SOLANA") === network && wallet.address.toLowerCase() === score.address.toLowerCase())) return current;
+      const autoCount = current.filter(wallet => wallet.origin === "AUTO" && (wallet.network ?? "SOLANA") === network).length;
       if (autoCount >= 5) {
         setError("採用候補は最大5件です");
         return current;
       }
       setError(null);
       return [...current, {
+        network,
         address: score.address,
-        label: `採用候補 #${rank}`,
+        label: `${network === "SOLANA" ? "SOL" : network === "ETHEREUM" ? "ETH" : "BASE"} 採用候補 #${rank}`,
         origin: "AUTO",
         enabled: false,
         addedAt: new Date().toISOString(),
@@ -1394,8 +1440,8 @@ export function TradingApp() {
             <Badge tone="gray">手動10件 + 自動5件</Badge>
           </div>
           {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} onClose={closePosition} />}
-          {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={address => setWallets(current => current.filter(wallet => wallet.address !== address))} onToggle={(address, enabled) => setWallets(current => current.map(wallet => wallet.address === address ? { ...wallet, enabled } : wallet))} onStopAll={() => setWallets(current => current.map(wallet => ({ ...wallet, enabled: false })))} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
-          {view === "scanner" && <Scanner result={scanResult} scanState={scanState} scanning={scanState?.status === "RUNNING"} wallets={wallets} autoCount={wallets.filter(wallet => wallet.origin === "AUTO").length} onScan={scan} onAddCandidate={addScanCandidate} />}
+          {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={target => setWallets(current => current.filter(wallet => !((wallet.network ?? "SOLANA") === (target.network ?? "SOLANA") && wallet.address.toLowerCase() === target.address.toLowerCase())))} onToggle={(target, enabled) => setWallets(current => current.map(wallet => (wallet.network ?? "SOLANA") === (target.network ?? "SOLANA") && wallet.address.toLowerCase() === target.address.toLowerCase() ? { ...wallet, enabled } : wallet))} onStopAll={() => setWallets(current => current.map(wallet => ({ ...wallet, enabled: false })))} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
+          {view === "scanner" && <Scanner network={scanNetwork} onNetworkChange={setScanNetwork} result={scanResult} scanState={scanState} scanning={scanState?.status === "RUNNING"} wallets={wallets} autoCount={wallets.filter(wallet => wallet.origin === "AUTO" && (wallet.network ?? "SOLANA") === scanNetwork).length} onScan={scan} onAddCandidate={addScanCandidate} />}
           {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} />}
           {view === "activity" && <MobileActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}
           {view === "settings" && <SettingsView settings={settings} onChange={setSettings} />}

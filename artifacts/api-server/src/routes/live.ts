@@ -14,6 +14,12 @@ import {
   installWalletScanScheduler,
   startWalletScan,
 } from "../services/wallet-scan-manager";
+import {
+  ensureFreshEvmScan,
+  installEvmScanScheduler,
+  parseEvmNetwork,
+  startEvmScan,
+} from "../services/evm-wallet-scan-manager";
 
 const router = Router();
 
@@ -107,6 +113,28 @@ router.post("/scan", async (_request, response) => {
     response.setHeader("cache-control", "no-store").json(data);
   } catch (error) {
     response.status(500).json(apiError(error, "wallet.scan.start"));
+  }
+});
+
+router.get("/evm-scan", async (request, response) => {
+  try {
+    const network = parseEvmNetwork(String(request.query["network"] ?? ""));
+    installEvmScanScheduler(network);
+    const data = await ensureFreshEvmScan(network);
+    response.setHeader("cache-control", "no-store").json(data);
+  } catch (error) {
+    response.status(500).json(apiError(error, "evm.wallet.scan"));
+  }
+});
+
+router.post("/evm-scan", async (request, response) => {
+  try {
+    const network = parseEvmNetwork(String(request.query["network"] ?? ""));
+    const data = await startEvmScan(network);
+    response.status(data.status === "RUNNING" ? 202 : 200);
+    response.setHeader("cache-control", "no-store").json(data);
+  } catch (error) {
+    response.status(500).json(apiError(error, "evm.wallet.scan.start"));
   }
 });
 

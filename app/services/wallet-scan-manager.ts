@@ -80,9 +80,9 @@ async function loadLatestState() {
   if (!prisma) return runtime.state;
   try {
     const [run, latestCompleted] = await Promise.all([
-      prisma.walletScanRun.findFirst({ orderBy: { startedAt: "desc" } }),
+      prisma.walletScanRun.findFirst({ where: { network: "SOLANA" }, orderBy: { startedAt: "desc" } }),
       prisma.walletScanRun.findFirst({
-        where: { status: "COMPLETED", result: { not: Prisma.JsonNull } },
+        where: { network: "SOLANA", status: "COMPLETED", result: { not: Prisma.JsonNull } },
         orderBy: { completedAt: "desc" },
       }),
     ]);
@@ -130,8 +130,9 @@ async function saveScores(scores: WalletScore[], rankingEligible = false) {
   const analyzedAt = new Date();
   await db.$transaction(scores.map(score =>
     db.walletAnalysisCache.upsert({
-      where: { address: score.address },
+      where: { network_address: { network: "SOLANA", address: score.address } },
       create: {
+        network: "SOLANA",
         address: score.address,
         score: jsonScore(score),
         sources: score.sources,
@@ -152,8 +153,9 @@ async function saveScores(scores: WalletScore[], rankingEligible = false) {
 
 function rankScores(scores: WalletScore[]) {
   return [...scores].sort((a, b) =>
-    b.score - a.score
-    || b.avgTradesPerDay - a.avgTradesPerDay
+    b.avgTradesPerDay - a.avgTradesPerDay
+    || b.score - a.score
+    || b.winRate - a.winRate
     || b.activeTradingDays - a.activeTradingDays
     || b.realizedProfitUsd - a.realizedProfitUsd
     || a.address.localeCompare(b.address),
@@ -166,6 +168,7 @@ async function mergeWithCachedRanking(result: WalletScanResponse) {
   const maxAgeHours = Number.isFinite(configuredHours) ? Math.max(24, configuredHours) : 168;
   const rows = await prisma.walletAnalysisCache.findMany({
     where: {
+      network: "SOLANA",
       rankingEligible: true,
       lastAnalyzedAt: { gte: new Date(Date.now() - maxAgeHours * 3_600_000) },
     },
@@ -200,6 +203,7 @@ export async function startWalletScan() {
   if (prisma) {
     const run = await prisma.walletScanRun.create({
       data: {
+        network: "SOLANA",
         status: "RUNNING",
         phase: "DISCOVERING",
         message: "バックグラウンドスキャンを開始しました",

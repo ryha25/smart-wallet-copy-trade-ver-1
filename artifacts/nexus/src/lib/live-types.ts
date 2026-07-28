@@ -31,20 +31,21 @@ export type LiveWalletResponse = {
 };
 
 export type WalletScore = {
+  network?: ChainNetwork;
   address: string;
   sources: string[];
   score: number;
   roi30d: number;
   realizedProfitUsd: number;
-  unrealizedProfitUsd: number;
+  unrealizedProfitUsd: number | null;
   winRate: number;
   swaps30d: number;
   activeTradingDays: number;
   avgTradesPerDay: number;
   sellEvents: number;
   closedTrades: number;
-  ageDays: number;
-  maxDrawdownPct: number;
+  ageDays: number | null;
+  maxDrawdownPct: number | null;
   profitableWeeks: number;
   evaluatedTransactions: number;
   valuedEvents: number;
@@ -57,7 +58,8 @@ export type WalletScore = {
 };
 
 export type WalletScanResponse = {
-  source: "HELIUS_MULTI_DEX_SCAN";
+  network?: ChainNetwork;
+  source: "HELIUS_MULTI_DEX_SCAN" | "MORALIS_EVM_SCAN";
   scope: string;
   discoveredCandidates: number;
   scannedCandidates: number;
@@ -78,6 +80,7 @@ export type WalletScanPhase =
   | "FAILED";
 
 export type WalletScanState = {
+  network?: ChainNetwork;
   id: string | null;
   status: "IDLE" | "RUNNING" | "COMPLETED" | "FAILED";
   phase: WalletScanPhase;
@@ -119,6 +122,7 @@ export type TokenRiskCheck = {
 };
 
 export type TrackedWallet = {
+  network?: ChainNetwork;
   address: string;
   label: string;
   origin: "MANUAL" | "AUTO";
@@ -126,6 +130,8 @@ export type TrackedWallet = {
   addedAt: string;
   score?: WalletScore;
 };
+
+export type ChainNetwork = "SOLANA" | "ETHEREUM" | "BASE";
 
 export type FavoriteToken = LiveTokenQuote & {
   addedAt: string;
