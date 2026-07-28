@@ -27,6 +27,7 @@ import type {
   SkippedPaperTrade,
   TrackedWallet,
   WalletScanResponse,
+  WalletScanState,
   WalletScore,
 } from "../lib/live-types";
 import type { CopySettings } from "../lib/types";
@@ -47,11 +48,11 @@ const STORAGE = {
 
 type ApiErrorResponse = { error?: string; details?: string; stack?: string };
 
-async function requestJson<T>(url: string, timeoutMs = 60_000): Promise<T> {
+async function requestJson<T>(url: string, timeoutMs = 60_000, init?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(new Error(`リクエストが${Math.round(timeoutMs / 1000)}秒でタイムアウトしました`)), timeoutMs);
   try {
-    const response = await fetch(url, { cache: "no-store", credentials: "include", signal: controller.signal });
+    const response = await fetch(url, { ...init, cache: "no-store", credentials: "include", signal: controller.signal });
     const raw = await response.text();
     let payload: (T & ApiErrorResponse) | null = null;
     try {
@@ -415,6 +416,7 @@ function Sources({
 
 function Scanner({
   result,
+  scanState,
   scanning,
   wallets,
   autoCount,
@@ -422,6 +424,7 @@ function Scanner({
   onAddCandidate,
 }: {
   result: WalletScanResponse | null;
+  scanState: WalletScanState | null;
   scanning: boolean;
   wallets: TrackedWallet[];
   autoCount: number;
@@ -441,23 +444,44 @@ function Scanner({
       </div>
       <div className="mb-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="採用候補枠" value={`${autoCount} / 5`} detail="追加時はコピーOFF" />
-        <Metric label="重複除外後の発見数" value={result ? String(result.discoveredCandidates) : "—"} detail="複数DEX横断" />
-        <Metric label="今回の解析数" value={result ? String(result.scannedCandidates) : "—"} detail={result ? `解析成功 ${result.successfulAnalyses}件` : "架空データでの補充なし"} />
+        <Metric label="重複除外後の発見数" value={String(scanState?.discoveredCandidates || result?.discoveredCandidates || "—")} detail="複数DEX横断" />
+        <Metric label="今回の解析数" value={scanState?.targetCandidates ? `${scanState.analyzedCandidates} / ${scanState.targetCandidates}` : result ? String(result.scannedCandidates) : "—"} detail={scanState ? `解析成功 ${scanState.successfulAnalyses}件` : result ? `解析成功 ${result.successfulAnalyses}件` : "架空データでの補充なし"} />
         <Metric label="追加可能な上位候補" value={result ? String(result.qualified.length) : "—"} detail="上位5件のうち重大問題なし" accent={Boolean(result?.qualified.length)} />
       </div>
+      {scanState && (
+        <div className={`mb-3 rounded-xl border p-4 ${scanState.status === "FAILED" ? "border-rose-400/20 bg-rose-400/[0.06]" : "border-[#38e7ae]/20 bg-[#38e7ae]/[0.05]"}`}>
+          <div className="flex items-center justify-between gap-3 text-xs">
+            <span className="font-medium text-[#cbd4d7]">{scanState.message}</span>
+            <Badge tone={scanState.databaseEnabled ? "green" : "amber"}>{scanState.databaseEnabled ? "DB保存有効" : "メモリ保存"}</Badge>
+          </div>
+          {scanning && (
+            <>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/[0.07]">
+                <div
+                  className="h-full rounded-full bg-[#38e7ae] transition-[width] duration-500"
+                  style={{ width: `${scanState.targetCandidates ? Math.max(2, scanState.analyzedCandidates / scanState.targetCandidates * 100) : 2}%` }}
+                />
+              </div>
+              <p className="mt-2 text-[11px] text-[#718188]">画面を閉じてもサーバー側で解析を続行します。</p>
+            </>
+          )}
+          {scanState.error && <p className="mt-2 break-all text-xs text-rose-300">{scanState.error}</p>}
+        </div>
+      )}
       <Card>
         <SectionHeader
           title="実データ査定結果・上位10件"
           note={result?.scope ?? "スキャンを実行すると、上位10件と注意事項・追加不可理由を表示します。"}
           action={result && <Badge tone="gray">{new Date(result.fetchedAt).toLocaleString("ja-JP")}</Badge>}
         />
-        {scanning ? (
+        {scanning && (
           <div className="flex min-h-64 flex-col items-center justify-center">
             <RefreshCw className="animate-spin text-[#38e7ae]" />
-            <p className="mt-4 text-sm text-[#a2afb4]">複数DEXから候補抽出し、30日履歴を集計しています</p>
-            <p className="mt-2 text-xs text-[#617076]">多数の実ウォレットを解析するため、数分かかる場合があります。</p>
+            <p className="mt-4 text-sm text-[#a2afb4]">{scanState?.message ?? "複数DEXから候補を収集中"}</p>
+            <p className="mt-2 text-xs text-[#617076]">保存済みランキングがある場合は下に表示したまま更新します。</p>
           </div>
-        ) : result?.evaluated.length ? (
+        )}
+        {result?.evaluated.length ? (
           <div className="divide-y divide-white/[0.07]">
             {result.evaluated.map((wallet, index) => {
               const blockers = wallet.blockers ?? [];
@@ -510,7 +534,7 @@ function Scanner({
               </div>
             )})}
           </div>
-        ) : <EmptyState title="まだスキャン結果がありません" detail="実行すると実データの上位10件を査定します。候補追加後もコピーはOFFのままです。" />}
+        ) : !scanning && <EmptyState title="まだスキャン結果がありません" detail="実行すると実データの上位10件を査定します。候補追加後もコピーはOFFのままです。" />}
       </Card>
       <div className="mt-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-4 text-xs leading-6 text-amber-100/70">
         Solana全履歴の完全走査ではありません。Jupiter・Raydium・Orca・Meteora・Pump.fun・PumpSwapの直近取引から重複を除外して候補を抽出し、設定された解析上限まで30日履歴を評価します。
@@ -962,7 +986,7 @@ export function TradingApp() {
   const [skipped, setSkipped] = useState<SkippedPaperTrade[]>([]);
   const [settings, setSettings] = useState<CopySettings>(defaultSettings);
   const [scanResult, setScanResult] = useState<WalletScanResponse | null>(null);
-  const [scanning, setScanning] = useState(false);
+  const [scanState, setScanState] = useState<WalletScanState | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
@@ -975,6 +999,35 @@ export function TradingApp() {
   useEffect(() => { walletsRef.current = wallets; }, [wallets]);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
   useEffect(() => { positionsRef.current = positions; }, [positions]);
+
+  const syncScanState = useCallback(async () => {
+    const state = await requestJson<WalletScanState>("/api/live/scan", 30_000);
+    setScanState(state);
+    if (state.result) setScanResult(state.result);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const sync = async () => {
+      try {
+        if (!cancelled) await syncScanState();
+      } catch (scanError) {
+        if (!cancelled) setError(scanError instanceof Error ? scanError.message : "スキャン状態の取得に失敗しました");
+      }
+    };
+    void sync();
+    return () => { cancelled = true; };
+  }, [syncScanState]);
+
+  useEffect(() => {
+    if (scanState?.status !== "RUNNING") return;
+    const timer = window.setInterval(() => {
+      void syncScanState().catch(scanError => {
+        setError(scanError instanceof Error ? scanError.message : "スキャン状態の更新に失敗しました");
+      });
+    }, 2_500);
+    return () => window.clearInterval(timer);
+  }, [scanState?.status, syncScanState]);
 
   useEffect(() => {
     const load = <T,>(key: string, fallback: T): T => {
@@ -1155,15 +1208,13 @@ export function TradingApp() {
   };
 
   const scan = async () => {
-    setScanning(true);
     setError(null);
     try {
-      const payload = await requestJson<WalletScanResponse>("/api/live/scan", 300_000);
-      setScanResult(payload);
+      const state = await requestJson<WalletScanState>("/api/live/scan", 30_000, { method: "POST" });
+      setScanState(state);
+      if (state.result) setScanResult(state.result);
     } catch (scanError) {
       setError(scanError instanceof Error ? scanError.message : "スキャンに失敗しました");
-    } finally {
-      setScanning(false);
     }
   };
 
@@ -1267,7 +1318,7 @@ export function TradingApp() {
           </div>
           {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} />}
           {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={address => setWallets(current => current.filter(wallet => wallet.address !== address))} onToggle={(address, enabled) => setWallets(current => current.map(wallet => wallet.address === address ? { ...wallet, enabled } : wallet))} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
-          {view === "scanner" && <Scanner result={scanResult} scanning={scanning} wallets={wallets} autoCount={wallets.filter(wallet => wallet.origin === "AUTO").length} onScan={scan} onAddCandidate={addScanCandidate} />}
+          {view === "scanner" && <Scanner result={scanResult} scanState={scanState} scanning={scanState?.status === "RUNNING"} wallets={wallets} autoCount={wallets.filter(wallet => wallet.origin === "AUTO").length} onScan={scan} onAddCandidate={addScanCandidate} />}
           {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} />}
           {view === "activity" && <MobileActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}
           {view === "settings" && <SettingsView settings={settings} onChange={setSettings} />}

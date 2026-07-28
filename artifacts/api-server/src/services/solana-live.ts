@@ -207,6 +207,7 @@ async function getHeliusHistory(
     limit: number;
     sortOrder?: "asc" | "desc";
     filters?: Record<string, unknown>;
+    paginationToken?: string;
   },
 ) {
   if (!env("HELIUS_API_KEY")) throw new Error("ウォレットスキャンにはHELIUS_API_KEYが必要です");
@@ -219,6 +220,25 @@ async function getHeliusHistory(
       ...options,
     },
   ]);
+}
+
+async function getHeliusHistoryPages(
+  address: string,
+  options: Parameters<typeof getHeliusHistory>[1],
+  pageCount: number,
+) {
+  const data: Array<RpcTransaction & { signature?: string }> = [];
+  let paginationToken: string | undefined;
+  for (let page = 0; page < pageCount; page += 1) {
+    const response = await getHeliusHistory(address, {
+      ...options,
+      ...(paginationToken ? { paginationToken } : {}),
+    });
+    data.push(...response.data);
+    paginationToken = response.paginationToken ?? undefined;
+    if (!paginationToken || response.data.length === 0) break;
+  }
+  return { data, paginationToken };
 }
 
 async function solPriceHistory(from: number, to: number) {
@@ -556,7 +576,7 @@ function blockedWalletScore(address: string, blocker: string): WalletScore {
   return score;
 }
 
-async function analyzeWalletWithEvents(address: string): Promise<{ score: WalletScore; events: LiveWalletEvent[] }> {
+async function analyzeWalletWithEvents(address: string, historyPages = 1): Promise<{ score: WalletScore; events: LiveWalletEvent[] }> {
   if (!ADDRESS_PATTERN.test(address)) throw new Error("Solanaウォレットアドレスが正しくありません");
   if (DEX_PROGRAM_IDS.has(address)) {
     return { score: blockedWalletScore(address, "DEX・プログラムアドレス"), events: [] };
@@ -565,12 +585,12 @@ async function analyzeWalletWithEvents(address: string): Promise<{ score: Wallet
   const since = now - 30 * 86400;
   const [accountInfo, history, first] = await Promise.all([
     rpc<RpcAccountInfo>("getAccountInfo", [address, { encoding: "base64", commitment: "confirmed" }]).catch(() => null),
-    getHeliusHistory(address, {
+    getHeliusHistoryPages(address, {
       transactionDetails: "full",
       limit: 100,
-      sortOrder: "asc",
+      sortOrder: "desc",
       filters: { status: "succeeded", tokenAccounts: "balanceChanged", blockTime: { gte: since } },
-    }),
+    }, historyPages),
     getHeliusHistory(address, { transactionDetails: "signatures", limit: 1, sortOrder: "asc" }),
   ]);
   const account = accountInfo?.value;
@@ -621,20 +641,44 @@ export async function analyzeWallet(address: string): Promise<WalletScore> {
   return (await analyzeWalletWithEvents(address)).score;
 }
 
-export async function scanProfitableWallets(): Promise<WalletScanResponse> {
-  const discoveryLimit = boundedInteger("WALLET_SCAN_DISCOVERY_PER_DEX", 100, 40, 100);
-  const analysisLimit = boundedInteger("WALLET_SCAN_ANALYSIS_LIMIT", 60, 20, 100);
+export type WalletScanProgress = {
+  phase: "DISCOVERING" | "ANALYZING" | "RISK_CHECKING" | "SAVING";
+  message: string;
+  discoveredCandidates: number;
+  targetCandidates: number;
+  analyzedCandidates: number;
+  successfulAnalyses: number;
+};
+
+export type WalletScanOptions = {
+  onProgress?: (progress: WalletScanProgress) => void | Promise<void>;
+  onAnalyzed?: (score: WalletScore) => void | Promise<void>;
+};
+
+export async function scanProfitableWallets(options: WalletScanOptions = {}): Promise<WalletScanResponse> {
+  const discoveryLimit = boundedInteger("WALLET_SCAN_DISCOVERY_PER_DEX", 300, 100, 1_000);
+  const discoveryPages = Math.ceil(discoveryLimit / 100);
+  const analysisLimit = boundedInteger("WALLET_SCAN_ANALYSIS_LIMIT", 250, 50, 500);
+  const historyPages = boundedInteger("WALLET_SCAN_HISTORY_PAGES", 3, 1, 10);
   const concurrency = boundedInteger("WALLET_SCAN_CONCURRENCY", 5, 1, 10);
+  await options.onProgress?.({
+    phase: "DISCOVERING",
+    message: "複数DEXから候補ウォレットを収集中",
+    discoveredCandidates: 0,
+    targetCandidates: analysisLimit,
+    analyzedCandidates: 0,
+    successfulAnalyses: 0,
+  });
   const discoveryResults = await Promise.all(DEX_DISCOVERY_SOURCES.map(async source => {
     try {
-      const history = await getHeliusHistory(source.programId, {
+      const history = await getHeliusHistoryPages(source.programId, {
         transactionDetails: "full",
-        limit: discoveryLimit,
+        limit: Math.min(100, discoveryLimit),
         sortOrder: "desc",
         filters: { status: "succeeded" },
-      });
+      }, discoveryPages);
       const addresses = [...new Set(
-        history.data
+        history.data.slice(0, discoveryLimit)
           .map(tx => accountKeys(tx)[0])
           .filter(address =>
             ADDRESS_PATTERN.test(address)
@@ -675,20 +719,51 @@ export async function scanProfitableWallets(): Promise<WalletScanResponse> {
     }
   }
 
+  await options.onProgress?.({
+    phase: "ANALYZING",
+    message: `${candidates.length}ウォレットの30日履歴を解析中`,
+    discoveredCandidates: allDiscovered.size,
+    targetCandidates: candidates.length,
+    analyzedCandidates: 0,
+    successfulAnalyses: 0,
+  });
+  let analyzedCount = 0;
+  let successfulCount = 0;
   const analyzed = await mapWithConcurrency(candidates, concurrency, async address => {
+    let result: { score: WalletScore; events: LiveWalletEvent[] };
     try {
-      const item = await analyzeWalletWithEvents(address);
+      const item = await analyzeWalletWithEvents(address, historyPages);
       item.score.sources = [...(sourceByAddress.get(address) ?? [])];
-      return item;
+      successfulCount += 1;
+      result = item;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[NEXT-TRADE][wallet.scan.analysis]", { address, message, stack: error instanceof Error ? error.stack : undefined });
       const score = blockedWalletScore(address, `解析失敗: ${message}`);
       score.sources = [...(sourceByAddress.get(address) ?? [])];
-      return { score, events: [] };
+      result = { score, events: [] };
     }
+    analyzedCount += 1;
+    await options.onAnalyzed?.(result.score);
+    await options.onProgress?.({
+      phase: "ANALYZING",
+      message: `${candidates.length}件中${analyzedCount}件を解析`,
+      discoveredCandidates: allDiscovered.size,
+      targetCandidates: candidates.length,
+      analyzedCandidates: analyzedCount,
+      successfulAnalyses: successfulCount,
+    });
+    return result;
   });
 
+  await options.onProgress?.({
+    phase: "RISK_CHECKING",
+    message: "上位候補の危険トークン・権限を確認中",
+    discoveredCandidates: allDiscovered.size,
+    targetCandidates: candidates.length,
+    analyzedCandidates: analyzedCount,
+    successfulAnalyses: successfulCount,
+  });
   const riskTargets = [...analyzed].sort((a, b) => b.score.score - a.score.score).slice(0, 20);
   await mapWithConcurrency(riskTargets, Math.min(4, concurrency), async item => {
     if (!item.score.addable) return;
@@ -721,9 +796,17 @@ export async function scanProfitableWallets(): Promise<WalletScanResponse> {
   const evaluated = ranked.slice(0, 10);
   const successfulAnalyses = analyzed.filter(item => !item.score.blockers.some(reason => reason.startsWith("解析失敗"))).length;
   const availableSources = discoveryResults.filter(result => !result.error).map(result => result.source);
+  await options.onProgress?.({
+    phase: "SAVING",
+    message: "ランキングを保存中",
+    discoveredCandidates: allDiscovered.size,
+    targetCandidates: candidates.length,
+    analyzedCandidates: analyzedCount,
+    successfulAnalyses,
+  });
   return {
     source: "HELIUS_MULTI_DEX_SCAN",
-    scope: `${availableSources.join("・")}の各直近最大${discoveryLimit}件から重複を除外し、${candidates.length}ウォレットを30日履歴で評価。画面には上位10件を表示`,
+    scope: `${availableSources.join("・")}の各直近最大${discoveryLimit}件から重複を除外し、${candidates.length}ウォレットを30日履歴最大${historyPages * 100}件で評価。画面には上位10件を表示`,
     discoveredCandidates: allDiscovered.size,
     scannedCandidates: candidates.length,
     successfulAnalyses,

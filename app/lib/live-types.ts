@@ -66,6 +66,31 @@ export type WalletScanResponse = {
   fetchedAt: string;
 };
 
+export type WalletScanPhase =
+  | "IDLE"
+  | "DISCOVERING"
+  | "ANALYZING"
+  | "RISK_CHECKING"
+  | "SAVING"
+  | "COMPLETED"
+  | "FAILED";
+
+export type WalletScanState = {
+  id: string | null;
+  status: "IDLE" | "RUNNING" | "COMPLETED" | "FAILED";
+  phase: WalletScanPhase;
+  message: string;
+  discoveredCandidates: number;
+  targetCandidates: number;
+  analyzedCandidates: number;
+  successfulAnalyses: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  databaseEnabled: boolean;
+  result: WalletScanResponse | null;
+  error: string | null;
+};
+
 export type FavoriteWalletMatch = WalletScore & {
   tokenMint: string;
   tokenRealizedProfitUsd: number;

@@ -86,13 +86,20 @@ npx prisma generate
 npx prisma migrate dev
 ```
 
+Replit・本番環境ではPostgreSQLを作成して `DATABASE_URL` をSecretsへ設定し、次を実行します。
+
+```bash
+npx prisma generate
+npx prisma migrate deploy
+```
+
 架空データを防ぐため、`npm run db:seed`はサンプルウォレットを投入しません。
 
 ## スキャン範囲と注意
 
-自動スキャンはJupiter・Raydium・Orca・Meteora・Pump.fun・PumpSwapの各直近最大100件からウォレットを抽出し、重複除外後の最大60ウォレットを30日履歴で評価します。画面にはランキング上位10件を表示し、上位5件だけをコピーOFFの採用候補として手動追加できます。Solanaチェーン全履歴を常時完全走査するものではありません。
+自動スキャンはJupiter・Raydium・Orca・Meteora・Pump.fun・PumpSwapの各直近最大300件からウォレットを抽出し、重複除外後の最大250ウォレットを30日履歴（1ウォレット最大300取引）で評価します。解析はバックグラウンドで継続し、進捗と結果をPostgreSQLへ保存します。画面には保存済みランキング上位10件を即時表示し、上位5件だけをコピーOFFの採用候補として手動追加できます。Solanaチェーン全履歴を常時完全走査するものではありません。
 
-解析量は `WALLET_SCAN_DISCOVERY_PER_DEX`（40〜100）、`WALLET_SCAN_ANALYSIS_LIMIT`（20〜100）、`WALLET_SCAN_CONCURRENCY`（1〜10）で調整できます。値を増やすとHeliusの使用クレジットと処理時間も増えます。
+解析量は `WALLET_SCAN_DISCOVERY_PER_DEX`（100〜1000）、`WALLET_SCAN_ANALYSIS_LIMIT`（50〜500）、`WALLET_SCAN_HISTORY_PAGES`（1〜10、1ページ100取引）、`WALLET_SCAN_CONCURRENCY`（1〜10）で調整できます。`WALLET_SCAN_AUTO_REFRESH_HOURS` は自動更新間隔で、`0` にすると自動開始を停止します。`WALLET_SCAN_CACHE_MAX_AGE_HOURS`（標準168時間）はランキングへ統合する過去の査定結果の有効期間です。値を増やすとHeliusの使用クレジットと処理時間も増えます。
 
 ランキングは1日平均取引回数を最大配点とし、稼働日数、利益が出た週数、勝率を組み合わせて継続的な取引を優先します。取引回数不足・利益継続性不足・利益集中は注意事項、スコア0・解析失敗・売却履歴なし・危険ウォレット・プログラム/プールアドレスは追加不可です。
 

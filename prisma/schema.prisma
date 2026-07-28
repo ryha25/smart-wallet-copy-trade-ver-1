@@ -33,6 +33,12 @@ enum RiskLevel {
   DANGEROUS
 }
 
+enum WalletScanRunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
 model User {
   id             String          @id @default(cuid())
   walletAddress  String?         @unique @map("wallet_address")
@@ -293,4 +299,35 @@ model SystemLog {
   createdAt DateTime @default(now()) @map("created_at")
   @@index([service, createdAt])
   @@map("system_logs")
+}
+
+model WalletScanRun {
+  id                    String              @id @default(cuid())
+  status                WalletScanRunStatus @default(RUNNING)
+  phase                 String
+  message               String
+  discoveredCandidates  Int                 @default(0) @map("discovered_candidates")
+  targetCandidates      Int                 @default(0) @map("target_candidates")
+  analyzedCandidates    Int                 @default(0) @map("analyzed_candidates")
+  successfulAnalyses    Int                 @default(0) @map("successful_analyses")
+  result                Json?
+  error                 String?
+  startedAt             DateTime            @default(now()) @map("started_at")
+  completedAt           DateTime?           @map("completed_at")
+  updatedAt             DateTime            @updatedAt @map("updated_at")
+  @@index([status, startedAt])
+  @@index([completedAt])
+  @@map("wallet_scan_runs")
+}
+
+model WalletAnalysisCache {
+  address               String   @id
+  score                 Json
+  sources               String[] @default([])
+  rankingEligible       Boolean  @default(false) @map("ranking_eligible")
+  firstSeenAt           DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt            DateTime @default(now()) @map("last_seen_at")
+  lastAnalyzedAt        DateTime @map("last_analyzed_at")
+  @@index([lastAnalyzedAt])
+  @@map("wallet_analysis_cache")
 }
