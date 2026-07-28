@@ -450,9 +450,10 @@ export async function getLiveWalletActivity(address: string): Promise<LiveWallet
 }
 
 type ClosedTrade = { pnl: number; cost: number; mint: string; blockTime: number };
+type OpenLot = { quantity: number; costPerToken: number };
 
-function closeTrades(events: LiveWalletEvent[]) {
-  const lots = new Map<string, Array<{ quantity: number; costPerToken: number }>>();
+function portfolioLots(events: LiveWalletEvent[]) {
+  const lots = new Map<string, OpenLot[]>();
   const closed: ClosedTrade[] = [];
   for (const event of [...events].sort((a, b) => a.blockTime - b.blockTime)) {
     if (!event.quoteAmountUsd || !event.tokenAmount) continue;
@@ -478,15 +479,29 @@ function closeTrades(events: LiveWalletEvent[]) {
     const proceeds = event.quoteAmountUsd * (matchedQuantity / event.tokenAmount);
     closed.push({ pnl: proceeds - cost, cost, mint: event.mint, blockTime: event.blockTime });
   }
-  return closed;
+  return { closed, lots };
+}
+
+function closeTrades(events: LiveWalletEvent[]) {
+  return portfolioLots(events).closed;
 }
 
 function scoreWallet(address: string, events: LiveWalletEvent[], ageDays: number, evaluatedTransactions: number): WalletScore {
-  const closed = closeTrades(events);
+  const portfolio = portfolioLots(events);
+  const closed = portfolio.closed;
   const sellEvents = events.filter(event => event.side === "SELL").length;
   const activeTradingDays = new Set(events.filter(event => event.blockTime > 0).map(event => Math.floor(event.blockTime / 86400))).size;
   const avgTradesPerDay = events.length / 30;
   const realizedProfitUsd = closed.reduce((sum, trade) => sum + trade.pnl, 0);
+  let unrealizedProfitUsd = 0;
+  for (const [mint, lots] of portfolio.lots) {
+    const currentPrice = events.find(event => event.mint === mint)?.current?.priceUsd;
+    if (!currentPrice) continue;
+    unrealizedProfitUsd += lots.reduce(
+      (sum, lot) => sum + lot.quantity * (currentPrice - lot.costPerToken),
+      0,
+    );
+  }
   const cost = closed.reduce((sum, trade) => sum + trade.cost, 0);
   const roi30d = cost > 0 ? realizedProfitUsd / cost * 100 : 0;
   const winRate = closed.length ? closed.filter(trade => trade.pnl > 0).length / closed.length * 100 : 0;
@@ -547,6 +562,7 @@ function scoreWallet(address: string, events: LiveWalletEvent[], ageDays: number
     score,
     roi30d: Number(roi30d.toFixed(2)),
     realizedProfitUsd: Number(realizedProfitUsd.toFixed(2)),
+    unrealizedProfitUsd: Number(unrealizedProfitUsd.toFixed(2)),
     winRate: Number(winRate.toFixed(2)),
     swaps30d: events.length,
     activeTradingDays,
@@ -608,7 +624,13 @@ async function analyzeWalletWithEvents(address: string, historyPages = 1): Promi
     needsSol ? solPriceHistory(since, now).catch(() => []) : Promise.resolve([]),
     getTokenQuotes(needsSol ? [WRAPPED_SOL_MINT] : []).catch(() => new Map<string, LiveTokenQuote>()),
   ]);
-  const events = valueSwaps(raw, solHistory, quotes.get(WRAPPED_SOL_MINT)?.priceUsd ?? null, new Map());
+  const baseEvents = valueSwaps(raw, solHistory, quotes.get(WRAPPED_SOL_MINT)?.priceUsd ?? null, new Map());
+  const openMints = [...portfolioLots(baseEvents).lots.entries()]
+    .filter(([, lots]) => lots.some(lot => lot.quantity > 1e-12))
+    .map(([mint]) => mint)
+    .slice(0, 30);
+  const currentQuotes = await getTokenQuotes(openMints).catch(() => new Map<string, LiveTokenQuote>());
+  const events = baseEvents.map(event => ({ ...event, current: currentQuotes.get(event.mint) ?? null }));
   const firstTime = first.data[0]?.blockTime ?? now;
   const ageDays = Math.max(0, Math.floor((now - firstTime) / 86400));
   const score = scoreWallet(address, events, ageDays, history.data.length);
@@ -812,6 +834,7 @@ export async function scanProfitableWallets(options: WalletScanOptions = {}): Pr
     successfulAnalyses,
     qualified: evaluated.filter(wallet => wallet.addable).slice(0, 5),
     evaluated,
+    rankingPool: ranked,
     fetchedAt: new Date().toISOString(),
   };
 }

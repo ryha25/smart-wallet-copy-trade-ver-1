@@ -1,11 +1,16 @@
 import { apiError } from "../../../lib/api-errors";
 import { requireAppSession } from "../../../lib/app-auth";
-import { ensureFreshWalletScan, startWalletScan } from "../../../services/wallet-scan-manager";
+import {
+  ensureFreshWalletScan,
+  installWalletScanScheduler,
+  startWalletScan,
+} from "../../../services/wallet-scan-manager";
 
 export async function GET(request: Request) {
   try {
     const unauthorized = await requireAppSession(request);
     if (unauthorized) return unauthorized;
+    installWalletScanScheduler();
     const data = await ensureFreshWalletScan();
     return Response.json(data, { headers: { "cache-control": "no-store" } });
   } catch (error) {

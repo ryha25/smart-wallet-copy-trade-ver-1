@@ -22,6 +22,7 @@ const IDLE_STATE: WalletScanState = {
 type ScanRuntime = {
   state: WalletScanState;
   task: Promise<void> | null;
+  scheduler: ReturnType<typeof setInterval> | null;
 };
 
 const runtimeRoot = globalThis as typeof globalThis & {
@@ -31,7 +32,9 @@ const runtimeRoot = globalThis as typeof globalThis & {
 const runtime = runtimeRoot.nextTradeWalletScanRuntime ?? {
   state: { ...IDLE_STATE },
   task: null,
+  scheduler: null,
 };
+runtime.scheduler ??= null;
 runtimeRoot.nextTradeWalletScanRuntime = runtime;
 
 function jsonScore(score: WalletScore) {
@@ -176,12 +179,14 @@ async function mergeWithCachedRanking(result: WalletScanResponse) {
       scores.set(score.address, score);
     }
   }
-  for (const score of result.evaluated) scores.set(score.address, score);
-  const evaluated = rankScores([...scores.values()]).slice(0, 10);
+  for (const score of result.rankingPool ?? result.evaluated) scores.set(score.address, score);
+  const rankingPool = rankScores([...scores.values()]);
+  const evaluated = rankingPool.slice(0, 10);
   return {
     ...result,
     scope: `${result.scope}・直近${maxAgeHours}時間のDB蓄積${scores.size}件を統合`,
     evaluated,
+    rankingPool,
     qualified: evaluated.filter(score => score.addable).slice(0, 5),
   };
 }
@@ -331,10 +336,23 @@ async function runBackgroundScan(runId: string) {
 
 export async function ensureFreshWalletScan() {
   const state = await getWalletScanState();
-  const configuredHours = Number(process.env.WALLET_SCAN_AUTO_REFRESH_HOURS ?? "24");
-  const refreshHours = Number.isFinite(configuredHours) ? Math.max(0, configuredHours) : 24;
+  const configuredHours = Number(process.env.WALLET_SCAN_AUTO_REFRESH_HOURS ?? "6");
+  const refreshHours = Number.isFinite(configuredHours) ? Math.max(0, configuredHours) : 6;
   if (refreshHours === 0 || state.status === "RUNNING") return state;
   const reference = state.completedAt ?? state.startedAt;
   const stale = !reference || Date.now() - new Date(reference).getTime() >= refreshHours * 3_600_000;
   return stale ? startWalletScan() : state;
+}
+
+export function installWalletScanScheduler() {
+  if (runtime.scheduler || Number(process.env.WALLET_SCAN_AUTO_REFRESH_HOURS ?? "6") === 0) return;
+  runtime.scheduler = setInterval(() => {
+    void ensureFreshWalletScan().catch(error => {
+      console.error("[NEXT-TRADE][wallet.scan.scheduler]", {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    });
+  }, 5 * 60_000);
+  runtime.scheduler.unref?.();
 }

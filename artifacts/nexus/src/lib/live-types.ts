@@ -36,6 +36,7 @@ export type WalletScore = {
   score: number;
   roi30d: number;
   realizedProfitUsd: number;
+  unrealizedProfitUsd: number;
   winRate: number;
   swaps30d: number;
   activeTradingDays: number;
@@ -63,6 +64,7 @@ export type WalletScanResponse = {
   successfulAnalyses: number;
   qualified: WalletScore[];
   evaluated: WalletScore[];
+  rankingPool?: WalletScore[];
   fetchedAt: string;
 };
 

@@ -9,7 +9,11 @@ import {
   getTokenRisk,
   scanWalletsForToken,
 } from "../services/solana-live";
-import { ensureFreshWalletScan, startWalletScan } from "../services/wallet-scan-manager";
+import {
+  ensureFreshWalletScan,
+  installWalletScanScheduler,
+  startWalletScan,
+} from "../services/wallet-scan-manager";
 
 const router = Router();
 
@@ -88,6 +92,7 @@ router.get("/score", async (request, response) => {
 
 router.get("/scan", async (_request, response) => {
   try {
+    installWalletScanScheduler();
     const data = await ensureFreshWalletScan();
     response.setHeader("cache-control", "no-store").json(data);
   } catch (error) {

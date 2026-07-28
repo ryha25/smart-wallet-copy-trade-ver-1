@@ -219,11 +219,12 @@ function Field({
 
 function ScorePanel({ score }: { score: WalletScore }) {
   return (
-    <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-5">
+    <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-3 xl:grid-cols-6">
       <div><span className="text-[#718188]">スコア</span><p className="mt-1 text-lg font-semibold text-white">{score.score}<span className="text-xs text-[#718188]"> / 100</span></p></div>
       <div><span className="text-[#718188]">1日平均取引</span><p className="mt-1 text-lg font-semibold text-[#38e7ae]">{(score.avgTradesPerDay ?? 0).toFixed(2)}回</p><span className="text-[10px] text-[#617076]">稼働 {score.activeTradingDays ?? 0}日</span></div>
       <div><span className="text-[#718188]">30日ROI</span><p className={`mt-1 text-lg font-semibold ${score.roi30d >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>{pct(score.roi30d)}</p></div>
       <div><span className="text-[#718188]">確定利益</span><p className="mt-1 text-lg font-semibold text-white">{money(score.realizedProfitUsd, true)}</p></div>
+      <div><span className="text-[#718188]">含み益</span><p className={`mt-1 text-lg font-semibold ${(score.unrealizedProfitUsd ?? 0) >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>{money(score.unrealizedProfitUsd ?? 0, true)}</p></div>
       <div><span className="text-[#718188]">勝率</span><p className="mt-1 text-lg font-semibold text-white">{score.winRate.toFixed(1)}%</p></div>
     </div>
   );
@@ -430,6 +431,8 @@ function Sources({
   );
 }
 
+type WalletSort = "score" | "realized" | "unrealized";
+
 function Scanner({
   result,
   scanState,
@@ -447,6 +450,23 @@ function Scanner({
   onScan: () => Promise<void>;
   onAddCandidate: (wallet: WalletScore, rank: number) => void;
 }) {
+  const [sortBy, setSortBy] = useState<WalletSort>("score");
+  const sortedWallets = useMemo(() => {
+    const pool = result?.rankingPool ?? result?.evaluated ?? [];
+    return [...pool].sort((a, b) => {
+      if (sortBy === "realized") {
+        return b.realizedProfitUsd - a.realizedProfitUsd || b.score - a.score;
+      }
+      if (sortBy === "unrealized") {
+        return (b.unrealizedProfitUsd ?? 0) - (a.unrealizedProfitUsd ?? 0) || b.score - a.score;
+      }
+      return b.score - a.score
+        || b.avgTradesPerDay - a.avgTradesPerDay
+        || b.realizedProfitUsd - a.realizedProfitUsd;
+    }).slice(0, 10);
+  }, [result, sortBy]);
+  const addableTopFive = sortedWallets.slice(0, 5).filter(wallet => wallet.addable !== false && (wallet.blockers ?? []).length === 0).length;
+
   return (
     <>
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
@@ -462,13 +482,16 @@ function Scanner({
         <Metric label="採用候補枠" value={`${autoCount} / 5`} detail="追加時はコピーOFF" />
         <Metric label="重複除外後の発見数" value={String(scanState?.discoveredCandidates || result?.discoveredCandidates || "—")} detail="複数DEX横断" />
         <Metric label="今回の解析数" value={scanState?.targetCandidates ? `${scanState.analyzedCandidates} / ${scanState.targetCandidates}` : result ? String(result.scannedCandidates) : "—"} detail={scanState ? `解析成功 ${scanState.successfulAnalyses}件` : result ? `解析成功 ${result.successfulAnalyses}件` : "架空データでの補充なし"} />
-        <Metric label="追加可能な上位候補" value={result ? String(result.qualified.length) : "—"} detail="上位5件のうち重大問題なし" accent={Boolean(result?.qualified.length)} />
+        <Metric label="追加可能な上位候補" value={result ? String(addableTopFive) : "—"} detail="選択中ソートの上位5件" accent={addableTopFive > 0} />
       </div>
       {scanState && (
         <div className={`mb-3 rounded-xl border p-4 ${scanState.status === "FAILED" ? "border-rose-400/20 bg-rose-400/[0.06]" : "border-[#38e7ae]/20 bg-[#38e7ae]/[0.05]"}`}>
           <div className="flex items-center justify-between gap-3 text-xs">
             <span className="font-medium text-[#cbd4d7]">{scanState.message}</span>
-            <Badge tone={scanState.databaseEnabled ? "green" : "amber"}>{scanState.databaseEnabled ? "DB保存有効" : "メモリ保存"}</Badge>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Badge tone="green">定期自動更新</Badge>
+              <Badge tone={scanState.databaseEnabled ? "green" : "amber"}>{scanState.databaseEnabled ? "DB保存有効" : "メモリ保存"}</Badge>
+            </div>
           </div>
           {scanning && (
             <>
@@ -484,6 +507,28 @@ function Scanner({
           {scanState.error && <p className="mt-2 break-all text-xs text-rose-300">{scanState.error}</p>}
         </div>
       )}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="mr-1 text-xs text-[#718188]">並び替え</span>
+        {([
+          ["score", "総合スコア"],
+          ["realized", "確定利益"],
+          ["unrealized", "含み益"],
+        ] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setSortBy(value)}
+            className={`min-h-10 rounded-lg border px-4 text-xs font-semibold transition ${
+              sortBy === value
+                ? "border-[#38e7ae]/40 bg-[#38e7ae]/10 text-[#38e7ae]"
+                : "border-white/10 bg-white/[0.03] text-[#8d9ba0] hover:border-white/20"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+        <span className="w-full text-[10px] text-[#59696f] sm:ml-auto sm:w-auto">含み益は現在価格を取得できた未売却残高のみ・総合スコアには不使用</span>
+      </div>
       <Card>
         <SectionHeader
           title="実データ査定結果・上位10件"
@@ -497,9 +542,9 @@ function Scanner({
             <p className="mt-2 text-xs text-[#617076]">保存済みランキングがある場合は下に表示したまま更新します。</p>
           </div>
         )}
-        {result?.evaluated.length ? (
+        {sortedWallets.length ? (
           <div className="divide-y divide-white/[0.07]">
-            {result.evaluated.map((wallet, index) => {
+            {sortedWallets.map((wallet, index) => {
               const blockers = wallet.blockers ?? [];
               const warnings = wallet.warnings ?? (blockers.length ? [] : wallet.reasons ?? []);
               const alreadyAdded = wallets.some(item => item.address === wallet.address);
@@ -1036,12 +1081,13 @@ export function TradingApp() {
   }, [syncScanState]);
 
   useEffect(() => {
-    if (scanState?.status !== "RUNNING") return;
+    if (!scanState) return;
+    const intervalMs = scanState.status === "RUNNING" ? 2_500 : 60_000;
     const timer = window.setInterval(() => {
       void syncScanState().catch(scanError => {
         setError(scanError instanceof Error ? scanError.message : "スキャン状態の更新に失敗しました");
       });
-    }, 2_500);
+    }, intervalMs);
     return () => window.clearInterval(timer);
   }, [scanState?.status, syncScanState]);
 
