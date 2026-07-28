@@ -343,6 +343,7 @@ function Sources({
   onAdd,
   onDelete,
   onToggle,
+  onStopAll,
   onRefresh,
   onRefreshAll,
 }: {
@@ -352,6 +353,7 @@ function Sources({
   onAdd: (address: string, label: string) => string | null;
   onDelete: (address: string) => void;
   onToggle: (address: string, enabled: boolean) => void;
+  onStopAll: () => void;
   onRefresh: (wallet: TrackedWallet, analyze?: boolean) => Promise<void>;
   onRefreshAll: () => Promise<void>;
 }) {
@@ -360,6 +362,7 @@ function Sources({
   const [message, setMessage] = useState<string | null>(null);
   const manualCount = wallets.filter(wallet => wallet.origin === "MANUAL").length;
   const autoCount = wallets.filter(wallet => wallet.origin === "AUTO").length;
+  const enabledCount = wallets.filter(wallet => wallet.enabled).length;
   const submit = () => {
     const error = onAdd(address.trim(), label.trim());
     setMessage(error ?? "コピー元を登録しました");
@@ -375,9 +378,21 @@ function Sources({
           <h1 className="text-xl font-semibold">コピー元ウォレット</h1>
           <p className="mt-1 text-sm text-[#7f9097]">自分の接続ウォレットとは別に、コピーする実在アドレスを管理します。</p>
         </div>
-        <button onClick={() => void onRefreshAll()} disabled={Boolean(busy) || wallets.length === 0} className="flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm text-[#d4dcde] transition hover:border-[#38e7ae] disabled:opacity-40">
-          <RefreshCw size={15} className={busy ? "animate-spin" : ""} /> 全件を今すぐ更新
-        </button>
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm(`監視中のコピー元${enabledCount}件をすべて停止しますか？`)) onStopAll();
+            }}
+            disabled={enabledCount === 0}
+            className="min-h-11 flex-1 rounded-xl border border-rose-400/25 bg-rose-400/[0.07] px-4 text-sm font-semibold text-rose-300 transition hover:bg-rose-400/[0.13] disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none"
+          >
+            全コピー停止
+          </button>
+          <button onClick={() => void onRefreshAll()} disabled={Boolean(busy) || wallets.length === 0} className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-white/10 px-4 text-sm text-[#d4dcde] transition hover:border-[#38e7ae] disabled:opacity-40 sm:flex-none">
+            <RefreshCw size={15} className={busy ? "animate-spin" : ""} /> 全件を今すぐ更新
+          </button>
+        </div>
       </div>
       <div className="grid gap-3 lg:grid-cols-[360px_1fr]">
         <Card className="h-fit p-5">
@@ -1379,7 +1394,7 @@ export function TradingApp() {
             <Badge tone="gray">手動10件 + 自動5件</Badge>
           </div>
           {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} onClose={closePosition} />}
-          {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={address => setWallets(current => current.filter(wallet => wallet.address !== address))} onToggle={(address, enabled) => setWallets(current => current.map(wallet => wallet.address === address ? { ...wallet, enabled } : wallet))} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
+          {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={address => setWallets(current => current.filter(wallet => wallet.address !== address))} onToggle={(address, enabled) => setWallets(current => current.map(wallet => wallet.address === address ? { ...wallet, enabled } : wallet))} onStopAll={() => setWallets(current => current.map(wallet => ({ ...wallet, enabled: false })))} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
           {view === "scanner" && <Scanner result={scanResult} scanState={scanState} scanning={scanState?.status === "RUNNING"} wallets={wallets} autoCount={wallets.filter(wallet => wallet.origin === "AUTO").length} onScan={scan} onAddCandidate={addScanCandidate} />}
           {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} />}
           {view === "activity" && <MobileActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}
