@@ -178,8 +178,10 @@ npx prisma generate
 npx prisma migrate deploy
 ```
 
-Replit Deploymentでは`replit:build`が`prisma generate`と`prisma migrate deploy`を
-先に実行します。今回の実売買対応では`20260729010000_live_trading`が適用されます。
+Replit Deploymentのビルドでは`prisma generate`だけを自動実行します。マイグレーションは
+デプロイ前にShellから`npx prisma migrate deploy`を実行してください。DB状態とビルドを
+分離することで、デプロイ環境から既に適用済みのマイグレーションを再操作しません。
+今回の実売買対応では`20260729010000_live_trading`が適用されます。
 
 架空データを防ぐため、`npm run db:seed`はサンプルウォレットを投入しません。
 
