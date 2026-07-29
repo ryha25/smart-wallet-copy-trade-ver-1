@@ -33,6 +33,17 @@ enum RiskLevel {
   DANGEROUS
 }
 
+enum ExecutionMode {
+  PAPER
+  LIVE
+}
+
+enum ExecutionStatus {
+  EXECUTING
+  SUCCESS
+  FAILED
+}
+
 enum WalletScanRunStatus {
   RUNNING
   COMPLETED
@@ -51,6 +62,7 @@ model User {
   paperPositions PaperPosition[]
   paperTrades    PaperTrade[]
   skippedTrades  SkippedTrade[]
+  liveExecutions LiveTradeExecution[]
   @@map("users")
 }
 
@@ -76,6 +88,7 @@ model TrackedWallet {
   paperPositions     PaperPosition[]
   paperTrades         PaperTrade[]
   skippedTrades      SkippedTrade[]
+  liveExecutions     LiveTradeExecution[]
   @@unique([network, address])
   @@index([network, isCopyEnabled, isBlocked])
   @@map("tracked_wallets")
@@ -194,6 +207,7 @@ model CopySettings {
   id                    String   @id @default(cuid())
   userId                String   @unique @map("user_id")
   enabled               Boolean  @default(true)
+  liveTradingEnabled    Boolean  @default(false) @map("live_trading_enabled")
   amountPerTradeUsd     Decimal  @db.Decimal(20, 6) @map("amount_per_trade_usd")
   maxPositions          Int      @map("max_positions")
   maxDailyAmountUsd     Decimal  @db.Decimal(20, 6) @map("max_daily_amount_usd")
@@ -229,6 +243,11 @@ model PaperPosition {
   amountUsd             Decimal       @db.Decimal(20, 6) @map("amount_usd")
   amountSol             Decimal       @db.Decimal(20, 9) @map("amount_sol")
   quantity              Decimal       @db.Decimal(30, 12)
+  executionMode         ExecutionMode @default(PAPER) @map("execution_mode")
+  rawTokenAmount        String?       @map("raw_token_amount")
+  tokenDecimals         Int?          @map("token_decimals")
+  buySignature          String?       @map("buy_signature")
+  sellSignature         String?       @map("sell_signature")
   status                TradeStatus   @default(OPEN)
   closedAt              DateTime?     @map("closed_at")
   exitPriceUsd          Decimal?      @db.Decimal(30, 12) @map("exit_price_usd")
@@ -241,6 +260,30 @@ model PaperPosition {
   @@unique([sourceWalletId, sourceSignature, tokenMint])
   @@index([userId, status])
   @@map("paper_positions")
+}
+
+model LiveTradeExecution {
+  id                String          @id @default(cuid())
+  idempotencyKey    String          @unique @map("idempotency_key")
+  userId            String          @map("user_id")
+  sourceWalletId    String          @map("source_wallet_id")
+  paperPositionId   String?         @map("paper_position_id")
+  side              TradeSide
+  status            ExecutionStatus @default(EXECUTING)
+  inputMint         String          @map("input_mint")
+  outputMint        String          @map("output_mint")
+  inputAmount       String          @map("input_amount")
+  outputAmount      String?         @map("output_amount")
+  requestId         String?         @map("request_id")
+  signature         String?
+  error             String?
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+  user              User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceWallet      TrackedWallet   @relation(fields: [sourceWalletId], references: [id], onDelete: Cascade)
+  @@index([userId, status, createdAt])
+  @@index([paperPositionId])
+  @@map("live_trade_executions")
 }
 
 model PaperTrade {

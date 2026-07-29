@@ -4,6 +4,7 @@ import { evaluateCopySignal } from "../lib/paper-trading";
 import { prisma } from "../lib/prisma";
 import type { CopyMonitorStatus, LiveWalletEvent } from "../lib/live-types";
 import type { CopySettings } from "../lib/types";
+import { executeLiveSwap, getLiveTradingStatus, getMintDecimals, USDC_MINT } from "./live-trading";
 import { getLiveWalletActivity, getTokenRisk } from "./solana-live";
 
 type MonitorRuntime = {
@@ -51,6 +52,7 @@ export async function ensureAppUser() {
 
 function dbSettingsToClient(settings: {
   enabled: boolean;
+  liveTradingEnabled: boolean;
   amountPerTradeUsd: Prisma.Decimal;
   maxPositions: number;
   maxDailyAmountUsd: Prisma.Decimal;
@@ -66,6 +68,7 @@ function dbSettingsToClient(settings: {
 }): CopySettings {
   return {
     enabled: settings.enabled,
+    liveTradingEnabled: settings.liveTradingEnabled,
     amountPerTrade: Number(settings.amountPerTradeUsd),
     maxPositions: settings.maxPositions,
     maxDailyAmount: Number(settings.maxDailyAmountUsd),
@@ -89,6 +92,7 @@ export async function getOrCreateCopySettings() {
     create: {
       userId: user.id,
       enabled: defaultSettings.enabled,
+      liveTradingEnabled: defaultSettings.liveTradingEnabled,
       amountPerTradeUsd: defaultSettings.amountPerTrade,
       maxPositions: defaultSettings.maxPositions,
       maxDailyAmountUsd: defaultSettings.maxDailyAmount,
@@ -111,12 +115,17 @@ export async function getOrCreateCopySettings() {
 
 export async function saveCopySettings(settings: CopySettings) {
   if (!prisma) throw new Error("DATABASE_URLが未設定です");
+  if (settings.liveTradingEnabled) {
+    const status = await getLiveTradingStatus();
+    if (!status.ready) throw new Error(`実売買を開始できません: ${status.error ?? "Replit Secretsを確認してください"}`);
+  }
   const user = await ensureAppUser();
   const saved = await prisma.copySettings.upsert({
     where: { userId: user.id },
     create: {
       userId: user.id,
       enabled: settings.enabled,
+      liveTradingEnabled: settings.liveTradingEnabled,
       amountPerTradeUsd: settings.amountPerTrade,
       maxPositions: settings.maxPositions,
       maxDailyAmountUsd: settings.maxDailyAmount,
@@ -134,6 +143,7 @@ export async function saveCopySettings(settings: CopySettings) {
     },
     update: {
       enabled: settings.enabled,
+      liveTradingEnabled: settings.liveTradingEnabled,
       amountPerTradeUsd: settings.amountPerTrade,
       maxPositions: settings.maxPositions,
       maxDailyAmountUsd: settings.maxDailyAmount,
@@ -272,7 +282,35 @@ async function processBuy(
   }
 
   const sourcePrice = event.sourcePriceUsd ?? event.current.priceUsd;
-  const slippage = sourcePrice > 0 ? Math.abs(event.current.priceUsd - sourcePrice) / sourcePrice * 100 : 0;
+  let amountUsd = settings.amountPerTrade;
+  let quantity = settings.amountPerTrade / event.current.priceUsd;
+  let copyPriceUsd = event.current.priceUsd;
+  let executionMode: "PAPER" | "LIVE" = "PAPER";
+  let rawTokenAmount: string | null = null;
+  let tokenDecimals: number | null = null;
+  let buySignature: string | null = null;
+  if (settings.liveTradingEnabled) {
+    try {
+      tokenDecimals = await getMintDecimals(event.mint);
+      const swap = await executeLiveSwap({
+        idempotencyKey: `BUY:${wallet.id}:${event.signature}:${event.mint}`,
+        userId, sourceWalletId: wallet.id, side: "BUY", inputMint: USDC_MINT, outputMint: event.mint,
+        inputAmount: String(Math.max(1, Math.round(settings.amountPerTrade * 1_000_000))),
+        maxSlippagePercent: settings.maxSlippage,
+      });
+      rawTokenAmount = swap.outputAmount;
+      quantity = Number(swap.outputAmount) / 10 ** tokenDecimals;
+      amountUsd = Number(swap.inputAmount) / 1_000_000;
+      if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Jupiterの受取数量が不正です");
+      copyPriceUsd = amountUsd / quantity;
+      executionMode = "LIVE";
+      buySignature = swap.signature;
+    } catch (error) {
+      await skipTrade(userId, wallet.id, event, `実売買失敗: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+  }
+  const slippage = sourcePrice > 0 ? Math.abs(copyPriceUsd - sourcePrice) / sourcePrice * 100 : 0;
   await prisma.paperPosition.upsert({
     where: {
       sourceWalletId_sourceSignature_tokenMint: {
@@ -291,23 +329,69 @@ async function processBuy(
       copiedAt: new Date(),
       detectionDelayMs: delaySeconds * 1000,
       sourcePriceUsd: sourcePrice,
-      copyPriceUsd: event.current.priceUsd,
+      copyPriceUsd,
       slippagePercent: slippage,
-      amountUsd: settings.amountPerTrade,
+      amountUsd,
       amountSol: 0,
-      quantity: settings.amountPerTrade / event.current.priceUsd,
+      quantity,
+      executionMode,
+      rawTokenAmount,
+      tokenDecimals,
+      buySignature,
       status: "OPEN",
     },
     update: {},
   });
   runtime.createdPositions++;
-  await logEvent("copy.created", "ペーパートレードを作成", {
+  await logEvent("copy.created", executionMode === "LIVE" ? "実売買ポジションを作成" : "ペーパートレードを作成", {
     wallet: wallet.address,
     signature: event.signature,
     mint: event.mint,
-    amountUsd: settings.amountPerTrade,
-    copyPriceUsd: event.current.priceUsd,
+    amountUsd,
+    copyPriceUsd,
+    executionMode,
+    buySignature,
   }, true);
+}
+
+export async function settlePositionById(
+  positionId: string,
+  settlementReason: "SOURCE_SOLD" | "TAKE_PROFIT" | "STOP_LOSS" | "MANUAL" | "MAX_HOLDING_TIME" | "RISK_DETECTED",
+  quotedExitPrice?: number,
+) {
+  if (!prisma) throw new Error("DATABASE_URLが未設定です");
+  const position = await prisma.paperPosition.findUniqueOrThrow({ where: { id: positionId }, include: { sourceWallet: true } });
+  if (position.status !== "OPEN") return position;
+  let exitPrice = quotedExitPrice;
+  let pnlUsd: number;
+  let sellSignature: string | undefined;
+  if (position.executionMode === "LIVE") {
+    if (!position.rawTokenAmount) throw new Error("実売買ポジションのトークン数量が保存されていません");
+    const settings = await getOrCreateCopySettings();
+    const swap = await executeLiveSwap({
+      idempotencyKey: `SELL:${position.id}`, userId: position.userId, sourceWalletId: position.sourceWalletId,
+      paperPositionId: position.id, side: "SELL", inputMint: position.tokenMint, outputMint: USDC_MINT,
+      inputAmount: position.rawTokenAmount, maxSlippagePercent: settings.maxSlippage,
+    });
+    const proceedsUsd = Number(swap.outputAmount) / 1_000_000;
+    exitPrice = proceedsUsd / Number(position.quantity);
+    pnlUsd = proceedsUsd - Number(position.amountUsd);
+    sellSignature = swap.signature;
+  } else {
+    if (!exitPrice || exitPrice <= 0) throw new Error("ペーパートレードの決済価格を取得できません");
+    pnlUsd = Number(position.quantity) * exitPrice - Number(position.amountUsd);
+  }
+  if (!exitPrice || !Number.isFinite(exitPrice) || exitPrice <= 0) throw new Error("決済価格が不正です");
+  const pnlPercent = pnlUsd / Number(position.amountUsd) * 100;
+  const updated = await prisma.paperPosition.update({ where: { id: position.id }, data: {
+    status: "CLOSED", closedAt: new Date(), exitPriceUsd: exitPrice, pnlPercent, pnlUsd, pnlSol: 0,
+    sellSignature, settlementReason,
+  } });
+  await logEvent("copy.closed", position.executionMode === "LIVE" ? "実売買ポジションを決済" : "ペーパートレードを決済", {
+    wallet: position.sourceWallet.address, positionId: position.id, mint: position.tokenMint,
+    executionMode: position.executionMode, settlementReason, sellSignature, pnlPercent, pnlUsd,
+  }, true);
+  return updated;
 }
 
 async function processSell(
@@ -321,28 +405,7 @@ async function processSell(
     where: { sourceWalletId: wallet.id, tokenMint: event.mint, status: "OPEN" },
   });
   for (const position of positions) {
-    const entryPrice = Number(position.copyPriceUsd);
-    const pnlPercent = (exitPrice - entryPrice) / entryPrice * 100;
-    const pnlUsd = Number(position.amountUsd) * pnlPercent / 100;
-    await prisma.paperPosition.update({
-      where: { id: position.id },
-      data: {
-        status: "CLOSED",
-        closedAt: new Date(),
-        exitPriceUsd: exitPrice,
-        pnlPercent,
-        pnlUsd,
-        pnlSol: 0,
-        settlementReason: "SOURCE_SOLD",
-      },
-    });
-    await logEvent("copy.closed", "コピー元の売却でペーパートレードを決済", {
-      wallet: wallet.address,
-      signature: event.signature,
-      mint: event.mint,
-      pnlPercent,
-      pnlUsd,
-    }, true);
+    await settlePositionById(position.id, "SOURCE_SOLD", exitPrice);
   }
 }
 
@@ -376,26 +439,7 @@ async function applyAutomaticExits(
           : null;
     if (!reason) continue;
 
-    const pnlUsd = Number(position.amountUsd) * pnlPercent / 100;
-    await prisma.paperPosition.update({
-      where: { id: position.id },
-      data: {
-        status: "CLOSED",
-        closedAt: new Date(),
-        exitPriceUsd: currentPrice,
-        pnlPercent,
-        pnlUsd,
-        pnlSol: 0,
-        settlementReason: reason,
-      },
-    });
-    await logEvent("copy.closed", `Automatic exit: ${reason}`, {
-      wallet: wallet.address,
-      positionId: position.id,
-      mint: position.tokenMint,
-      pnlPercent,
-      pnlUsd,
-    }, true);
+    await settlePositionById(position.id, reason, currentPrice);
   }
 }
 
@@ -406,6 +450,7 @@ async function monitorWallet(
     address: string;
     origin: string;
     isCopyEnabled: boolean;
+    isBlocked: boolean;
     lastObservedSignature: string | null;
   },
   settings: CopySettings,
@@ -437,7 +482,9 @@ async function monitorWallet(
   }
   const newEvents = eventsAfterMarker(activity.events, wallet.lastObservedSignature);
   for (const event of [...newEvents].sort((a, b) => a.blockTime - b.blockTime)) {
-    if (event.side === "BUY") await processBuy(userId, wallet, event, settings);
+    if (event.side === "BUY") {
+      if (settings.enabled && wallet.isCopyEnabled && !wallet.isBlocked) await processBuy(userId, wallet, event, settings);
+    }
     else await processSell(wallet, event);
   }
   await prisma.trackedWallet.update({
@@ -456,11 +503,19 @@ export async function runCopyMonitorCycle() {
   try {
     const user = await ensureAppUser();
     const settings = await getOrCreateCopySettings();
-    const allWallets = await prisma.trackedWallet.findMany({
-      where: { network: "SOLANA", isBlocked: false },
-      orderBy: { createdAt: "asc" },
-    });
-    const monitored = allWallets.filter(wallet => wallet.isCopyEnabled);
+    const [allWallets, openPositions] = await Promise.all([
+      prisma.trackedWallet.findMany({
+        where: { network: "SOLANA" },
+        orderBy: { createdAt: "asc" },
+      }),
+      prisma.paperPosition.findMany({
+        where: { userId: user.id, status: "OPEN" },
+        select: { sourceWalletId: true },
+        distinct: ["sourceWalletId"],
+      }),
+    ]);
+    const openSourceIds = new Set(openPositions.map(position => position.sourceWalletId));
+    const monitored = allWallets.filter(wallet => (wallet.isCopyEnabled && !wallet.isBlocked) || openSourceIds.has(wallet.id));
     runtime.monitoredWallets = monitored.length;
     runtime.manualWallets = monitored.filter(wallet => wallet.origin === "MANUAL").length;
     runtime.autoWallets = monitored.filter(wallet => wallet.origin === "AUTO").length;
@@ -478,16 +533,14 @@ export async function runCopyMonitorCycle() {
         lastObservedSignature: wallet.lastObservedSignature,
       })),
     });
-    if (settings.enabled) {
-      for (const wallet of monitored) {
-        try {
-          await monitorWallet(user.id, wallet, settings);
-        } catch (error) {
-          await logEvent("wallet.error", "ウォレット監視エラー", {
-            address: wallet.address,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+    for (const wallet of monitored) {
+      try {
+        await monitorWallet(user.id, wallet, settings);
+      } catch (error) {
+        await logEvent("wallet.error", "ウォレット監視エラー", {
+          address: wallet.address,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
     runtime.lastCycleAt = new Date().toISOString();
@@ -509,6 +562,7 @@ export async function runCopyMonitorCycle() {
 }
 
 export function installCopyMonitor() {
+  if (process.env.COPY_MONITOR_EXTERNAL_WORKER === "true") return;
   if (runtime.timer || !prisma) return;
   const seconds = Math.max(10, Number(process.env.COPY_MONITOR_INTERVAL_SECONDS ?? "15") || 15);
   runtime.timer = setInterval(() => { void runCopyMonitorCycle(); }, seconds * 1000);

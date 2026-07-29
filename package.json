@@ -10,8 +10,8 @@
     "build": "vinext build",
     "start": "vinext start",
     "replit:dev": "vinext dev --hostname 0.0.0.0 --port 8080",
-    "replit:build": "vinext build",
-    "replit:start": "vinext start --hostname 0.0.0.0 --port 8080",
+    "replit:build": "prisma generate && prisma migrate deploy && vinext build",
+    "replit:start": "node scripts/replit-start.mjs",
     "test": "node --test tests/paper-trading.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck": "tsc --noEmit",
@@ -29,7 +29,8 @@
     "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "recharts": "^2.15.4"
+    "recharts": "^2.15.4",
+    "tsx": "^4.20.3"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
@@ -44,7 +45,6 @@
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
     "prisma": "^6.12.0",
-    "tsx": "^4.20.3",
     "typescript": "5.9.3",
     "vinext": "0.0.50",
     "vite": "8.0.13",

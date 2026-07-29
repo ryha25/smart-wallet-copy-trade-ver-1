@@ -1,5 +1,6 @@
 export type CopySettings = {
   enabled: boolean;
+  liveTradingEnabled: boolean;
   amountPerTrade: number;
   maxPositions: number;
   maxDailyAmount: number;

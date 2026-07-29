@@ -1,5 +1,6 @@
 export type CopySettings = {
   enabled: boolean;
+  liveTradingEnabled: boolean;
   amountPerTrade: number;
   maxPositions: number;
   maxDailyAmount: number;
@@ -12,4 +13,14 @@ export type CopySettings = {
   maxDetectionSeconds: number;
   maxPriceRiseEnabled: boolean;
   maxPriceRise: number;
+};
+
+export type LiveTradingStatus = {
+  environmentEnabled: boolean;
+  configured: boolean;
+  ready: boolean;
+  address: string | null;
+  solBalance: number | null;
+  usdcBalance: number | null;
+  error: string | null;
 };

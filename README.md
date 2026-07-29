@@ -14,6 +14,10 @@ COPY_MONITOR_INTERVAL_SECONDS="15"
 `skipped_trades`へ保存します。監視対象数、登録経路別件数、copyEnabled、最終署名、
 BUY検知数、コピー結果、見送り理由はサーバーログへ一時出力されます。
 
+運用モードは設定画面で`PAPER`と`LIVE`を切り替えられます。初期状態は必ず
+`PAPER`です。どちらも購入は新規BUY検知後に自動実行し、コピー元売却・利確・
+損切りで自動決済します。保有画面からの手動決済も利用できます。
+
 この更新をデプロイする前に、次を実行してください。
 
 ```bash
@@ -58,11 +62,15 @@ npx prisma migrate deploy
 1. GitHubリポジトリをReplitへインポートします。
 2. ReplitのSecretsに必要なAPIキーとログイン設定を登録します。
 3. Runボタンを押すと、NEXT-TRADEがポート8080で起動します。
-4. PublishingからAutoscale Deploymentを選び、Publishします。
+4. 使用感の確認だけならPreviewで構いません。本番の常時監視ではPublishingから
+   **Reserved VM Deployment**を選び、Publishします。
 
 Replitでは `.replit` の設定により、開発時は `replit:dev`、公開時は
 `replit:build` と `replit:start` が自動実行されます。サーバーは
 `0.0.0.0:8080` で待ち受けます。
+`replit:start`はWebサーバーとコピー監視ワーカーを同時に起動するため、ブラウザを
+閉じてもReserved VM上で監視が継続します。Autoscaleはアイドル時に停止し得るため、
+実売買の常時監視には使用しないでください。
 
 ログインには次のSecretsが必須です。
 
@@ -74,7 +82,8 @@ Replitでは `.replit` の設定により、開発時は `replit:dev`、公開�
 Previewで確認する場合だけ `DEBUG_ERRORS=true` を設定してください。本番公開時は
 `DEBUG_ERRORS=false` に戻してください。
 
-Solana上の実在ウォレットと実市場データを分析し、コピー取引を仮想資金で検証する日本語Webアプリです。実資金の注文は送信しません。
+Solana上の実在ウォレットと実市場データを分析し、まず仮想資金でコピー取引を検証し、
+確認後に専用ウォレットを使った実売買へ切り替えられる日本語Webアプリです。
 
 ## 実装済み機能
 
@@ -82,7 +91,7 @@ Solana上の実在ウォレットと実市場データを分析し、コピー�
 - Jupiterの直近実取引から優秀ウォレット候補を抽出し、自動枠へ最大5件採用
 - 30日ROI、確定利益、勝率、売買回数、ウォレット経過日数、最大ドローダウン、利益継続性を実履歴から集計
 - 登録ウォレットを15秒間隔で監視
-- 新規購入検知時にJupiterの実見積もりを確認し、仮想資金でペーパートレード
+- 新規購入検知時にJupiterの実見積もりを確認し、PAPERでは仮想取引、LIVEではJupiter Swap V2で実売買
 - コピー元売却、利確、損切り、手動決済
 - 見送った実シグナルと理由を端末内に保存
 - CAだけでお気に入りコインを登録し、名称・シンボル・価格・流動性・時価総額を自動取得
@@ -94,7 +103,8 @@ Solana上の実在ウォレットと実市場データを分析し、コピー�
 - Solana Wallet Adapterによるユーザーウォレット接続
 - PC・スマートフォン対応のダークテーマ
 
-架空ウォレット、架空売買、架空収益のシードデータはありません。初回表示は空で、実APIから取得したデータだけが追加されます。仮想なのはペーパートレードの開始残高と取引資金だけです。
+架空ウォレット、架空売買、架空収益のシードデータはありません。初回表示は空で、
+実APIから取得したデータだけが追加されます。PAPERモードだけ開始残高と取引資金が仮想です。
 
 ## データソース
 
@@ -126,9 +136,31 @@ SOLANA_RPC_URL="https://api.mainnet-beta.solana.com"
 HELIUS_API_KEY=""
 BIRDEYE_API_KEY=""
 JUPITER_API_KEY=""
+LIVE_TRADING_ENABLED="false"
+TRADING_WALLET_PUBLIC_KEY=""
+TRADING_WALLET_SECRET_KEY=""
 ```
 
-`HELIUS_API_KEY`、`BIRDEYE_API_KEY`、`JUPITER_API_KEY`を設定してください。`.env.local`はGit管理対象外です。秘密鍵やシードフレーズは設定しないでください。
+`HELIUS_API_KEY`、`BIRDEYE_API_KEY`、`JUPITER_API_KEY`を設定してください。
+`.env.local`はGit管理対象外です。
+
+### 実売買へ切り替える場合
+
+1. メインウォレットとは別に、NEXT-TRADE専用Solanaウォレットを新規作成します。
+2. 失っても許容できる少額のUSDCと、手数料用の少額SOLだけを入れます。
+3. Replit Secretsへ`TRADING_WALLET_PUBLIC_KEY`と`TRADING_WALLET_SECRET_KEY`を登録します。
+4. `TRADING_WALLET_SECRET_KEY`はBase58秘密鍵、またはSolana CLI keypairの64整数JSON配列を使用できます。
+5. `LIVE_TRADING_ENABLED=true`へ変更し、再デプロイ後に設定画面で残高と公開鍵を確認します。
+6. 設定画面へ`LIVE`と入力して、アプリ側の実売買を開始します。
+
+秘密鍵・シードフレーズはDB、ブラウザ、APIレスポンス、ログ、Gitへ保存しません。
+ただしサーバー自動売買には署名鍵が必要なため、Replit Secrets上の専用ホットウォレットを
+使用します。メインウォレットの鍵は絶対に登録しないでください。本格運用では外部署名基盤の
+利用を推奨します。
+
+実売買ポジションが残っている間は`LIVE_TRADING_ENABLED=true`と専用ウォレットの
+Secretsを削除しないでください。画面の実売買停止やコピー元OFFは新規購入を止めますが、
+既存ポジションの自動決済と手動決済は継続できます。
 
 ## データベース
 
@@ -145,6 +177,9 @@ Replit・本番環境ではPostgreSQLを作成して `DATABASE_URL` をSecrets�
 npx prisma generate
 npx prisma migrate deploy
 ```
+
+Replit Deploymentでは`replit:build`が`prisma generate`と`prisma migrate deploy`を
+先に実行します。今回の実売買対応では`20260729010000_live_trading`が適用されます。
 
 架空データを防ぐため、`npm run db:seed`はサンプルウォレットを投入しません。
 

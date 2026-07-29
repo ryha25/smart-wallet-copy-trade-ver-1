@@ -32,7 +32,7 @@ import type {
   WalletScanState,
   WalletScore,
 } from "../lib/live-types";
-import type { CopySettings } from "../lib/types";
+import type { CopySettings, LiveTradingStatus } from "../lib/types";
 
 type View = "dashboard" | "sources" | "scanner" | "favorites" | "activity" | "settings";
 type ActivityByWallet = Record<string, LiveWalletResponse>;
@@ -239,6 +239,8 @@ function Dashboard({
   activities,
   skipped,
   lastRefresh,
+  liveMode,
+  liveStatus,
   onClose,
 }: {
   wallets: TrackedWallet[];
@@ -246,6 +248,8 @@ function Dashboard({
   activities: ActivityByWallet;
   skipped: SkippedPaperTrade[];
   lastRefresh: string | null;
+  liveMode: boolean;
+  liveStatus: LiveTradingStatus | null;
   onClose: (position: LivePaperPosition, reason: string) => void;
 }) {
   const open = positions.filter(position => position.status === "OPEN");
@@ -265,13 +269,13 @@ function Dashboard({
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">リアルデータ運用状況</h1>
-          <p className="mt-1 text-sm text-[#7f9097]">市場・ウォレットは実データ、運用資金だけが仮想です。</p>
+          <p className="mt-1 text-sm text-[#7f9097]">{liveMode ? "市場・ウォレット・注文すべて実データで運用中です。" : "市場・ウォレットは実データ、運用資金だけが仮想です。"}</p>
         </div>
         <Badge tone={lastRefresh ? "green" : "gray"}>{lastRefresh ? `最終更新 ${new Date(lastRefresh).toLocaleTimeString("ja-JP")}` : "未取得"}</Badge>
       </div>
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Metric label="監視中コピー元" value={`${wallets.filter(wallet => wallet.enabled).length} / 15`} detail={`手動・お気に入り ${wallets.filter(w => w.origin !== "AUTO").length}/10・自動 ${wallets.filter(w => w.origin === "AUTO").length}/5`} />
-        <Metric label="ペーパートレード残高" value={money(INITIAL_PAPER_BALANCE + realized + unrealized)} detail="開始残高 $10,000（仮想資金）" accent />
+        <Metric label={liveMode ? "取引ウォレット残高" : "ペーパートレード残高"} value={liveMode ? (liveStatus?.usdcBalance == null ? "—" : `${liveStatus.usdcBalance.toFixed(2)} USDC`) : money(INITIAL_PAPER_BALANCE + realized + unrealized)} detail={liveMode ? "専用ウォレットの実残高" : "開始残高 $10,000（仮想資金）"} accent />
         <Metric label="確定損益" value={money(realized, true)} detail={`${closed.length}件決済`} accent={realized >= 0} />
         <Metric label="勝率" value={closed.length ? `${(wins / closed.length * 100).toFixed(1)}%` : "—"} detail="決済済みペーパートレードのみ" />
       </div>
@@ -287,7 +291,7 @@ function Dashboard({
                     <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#172227] text-xs font-bold text-[#38e7ae]">{position.symbol[0]}</div>
                     <div className="min-w-0 flex-1">
                       <p className="font-semibold">{position.symbol}</p>
-                      <p className="truncate font-mono text-[10px] text-[#66767c]">{shortAddress(position.wallet)}</p>
+                      <p className="truncate font-mono text-[10px] text-[#66767c]">{shortAddress(position.wallet)}・{position.executionMode === "LIVE" ? "LIVE" : "PAPER"}</p>
                     </div>
                     <div className="flex shrink-0 flex-col items-end">
                       <div className={`text-right tabular-nums ${pnl.pnlUsd >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>
@@ -1036,7 +1040,7 @@ function MobileActivityView({
             const result = calculatePaperPnl(position.copyPriceUsd, price, position.amountUsd);
             return (
               <div key={position.id} className="px-4 py-4 text-xs sm:px-5">
-                <div className="flex items-center gap-2"><Badge tone={position.status === "OPEN" ? "green" : "gray"}>{position.status === "OPEN" ? "保有中" : "決済済み"}</Badge><span className="font-semibold">{position.symbol}</span><span className="ml-auto font-mono text-[#718188]">{shortAddress(position.wallet)}</span></div>
+                <div className="flex items-center gap-2"><Badge tone={position.status === "OPEN" ? "green" : "gray"}>{position.status === "OPEN" ? "保有中" : "決済済み"}</Badge><Badge tone={position.executionMode === "LIVE" ? "red" : "gray"}>{position.executionMode === "LIVE" ? "LIVE" : "PAPER"}</Badge><span className="font-semibold">{position.symbol}</span><span className="ml-auto font-mono text-[#718188]">{shortAddress(position.wallet)}</span></div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-[#87969b]"><span>仮想額 {money(position.amountUsd)}</span><span className={result.pnlUsd >= 0 ? "text-[#38e7ae]" : "text-rose-300"}>損益 {money(result.pnlUsd, true)} / {pct(result.pnlPct)}</span></div>
                 <div className="mt-3 flex justify-end">{position.status === "OPEN" ? <button onClick={() => onClose(position, "手動決済")} className="text-rose-300">手動決済</button> : <span className="text-[#718188]">{position.exitReason}</span>}</div>
               </div>
@@ -1079,12 +1083,21 @@ function MobileActivityView({
   );
 }
 
-function SettingsView({ settings, onChange }: { settings: CopySettings; onChange: (settings: CopySettings) => void }) {
+function SettingsView({
+  settings,
+  liveStatus,
+  onChange,
+}: {
+  settings: CopySettings;
+  liveStatus: LiveTradingStatus | null;
+  onChange: (settings: CopySettings) => void;
+}) {
+  const [confirmation, setConfirmation] = useState("");
   const update = <K extends keyof CopySettings>(key: K, value: CopySettings[K]) => onChange({ ...settings, [key]: value });
   const numberFields: Array<[keyof CopySettings, string, string]> = [
-    ["amountPerTrade", "1取引の仮想購入額", "USD"],
+    ["amountPerTrade", "1取引の購入額", "USDC"],
     ["maxPositions", "最大同時保有数", "件"],
-    ["maxDailyAmount", "1日の最大仮想購入額", "USD"],
+    ["maxDailyAmount", "1日の最大購入額", "USDC"],
     ["maxSlippage", "最大スリッページ", "%"],
     ["maxDetectionSeconds", "コピー可能な検知遅延", "秒"],
   ];
@@ -1102,10 +1115,55 @@ function SettingsView({ settings, onChange }: { settings: CopySettings; onChange
     <>
       <div className="mb-5">
         <h1 className="text-xl font-semibold">コピー設定</h1>
-        <p className="mt-1 text-sm text-[#7f9097]">設定はこの端末に保存され、すべてペーパートレードにだけ適用されます。</p>
+        <p className="mt-1 text-sm text-[#7f9097]">設定はDBへ保存されます。実売買は専用ウォレットとJupiterを使用します。</p>
       </div>
+      <Card className="mb-5 max-w-4xl border-amber-400/20">
+        <SectionHeader
+          title="実売買モード"
+          note="専用ウォレットのUSDCで購入し、売却時はUSDCへ戻します。メインウォレットは使用しないでください。"
+          action={<Badge tone={settings.liveTradingEnabled ? "red" : "gray"}>{settings.liveTradingEnabled ? "LIVE" : "PAPER"}</Badge>}
+        />
+        <div className="space-y-4 p-5">
+          <div className="grid gap-3 text-xs sm:grid-cols-3">
+            <div className="rounded-xl bg-[#0a0f11] p-3"><p className="text-[#718188]">取引ウォレット</p><p className="mt-1 break-all font-mono">{liveStatus?.address ?? "未設定"}</p></div>
+            <div className="rounded-xl bg-[#0a0f11] p-3"><p className="text-[#718188]">USDC残高</p><p className="mt-1 text-base font-semibold">{liveStatus?.usdcBalance == null ? "—" : `${liveStatus.usdcBalance.toFixed(2)} USDC`}</p></div>
+            <div className="rounded-xl bg-[#0a0f11] p-3"><p className="text-[#718188]">手数料用SOL</p><p className="mt-1 text-base font-semibold">{liveStatus?.solBalance == null ? "—" : `${liveStatus.solBalance.toFixed(4)} SOL`}</p></div>
+          </div>
+          {liveStatus?.error && <p className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-3 text-xs text-amber-200">{liveStatus.error}</p>}
+          {!settings.liveTradingEnabled ? (
+            <div className="rounded-xl border border-rose-400/20 bg-rose-400/[0.05] p-4">
+              <p className="text-sm font-semibold text-rose-200">実資金を使う設定です</p>
+              <p className="mt-1 text-xs leading-5 text-[#9ba9ae]">開始するには「LIVE」と入力してください。Replit側の環境設定が未完了の場合は開始できません。</p>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <input
+                  value={confirmation}
+                  onChange={event => setConfirmation(event.target.value)}
+                  placeholder="LIVE"
+                  className="min-h-11 flex-1 rounded-lg border border-white/10 bg-[#080c0e] px-3 text-base outline-none focus:border-rose-300/50"
+                />
+                <button
+                  type="button"
+                  disabled={!liveStatus?.ready || confirmation !== "LIVE"}
+                  onClick={() => { update("liveTradingEnabled", true); setConfirmation(""); }}
+                  className="min-h-11 rounded-lg bg-rose-500 px-5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  実売買を開始
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => update("liveTradingEnabled", false)}
+              className="w-full rounded-xl border border-rose-400/30 bg-rose-400/10 p-4 text-sm font-semibold text-rose-200"
+            >
+              新規の実売買を緊急停止
+            </button>
+          )}
+        </div>
+      </Card>
       <Card className="max-w-4xl">
-        <SectionHeader title="実行設定" note="秘密鍵は不要です。実注文を送る処理はありません。" />
+        <SectionHeader title="実行設定" note={settings.liveTradingEnabled ? "以下の上限を実注文に適用します。" : "ペーパートレードに適用します。"} />
         <div className="p-5">
           <div className="mb-6 flex items-center justify-between rounded-xl border border-white/10 bg-[#0a0f11] p-4">
             <div><p className="text-sm font-semibold">コピー監視</p><p className="mt-1 text-xs text-[#718188]">15秒ごとに有効なコピー元を確認</p></div>
@@ -1142,12 +1200,14 @@ export function TradingApp() {
   const [scanNetwork, setScanNetwork] = useState<ChainNetwork>("SOLANA");
   const [mobileOpen, setMobileOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [wallets, setWallets] = useState<TrackedWallet[]>([]);
   const [activities, setActivities] = useState<ActivityByWallet>({});
   const [favorites, setFavorites] = useState<FavoriteToken[]>([]);
   const [positions, setPositions] = useState<LivePaperPosition[]>([]);
   const [skipped, setSkipped] = useState<SkippedPaperTrade[]>([]);
   const [settings, setSettings] = useState<CopySettings>(defaultSettings);
+  const [liveStatus, setLiveStatus] = useState<LiveTradingStatus | null>(null);
   const [scanResults, setScanResults] = useState<Partial<Record<ChainNetwork, WalletScanResponse>>>({});
   const [scanStates, setScanStates] = useState<Partial<Record<ChainNetwork, WalletScanState>>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -1226,12 +1286,13 @@ export function TradingApp() {
           for (const wallet of cachedWallets) storedWallets.push(await saveTrackedWallet(wallet));
         }
         setWallets(storedWallets);
-        const savedSettings = await requestJson<CopySettings>("/api/live/copy-settings", 30_000, {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(cachedSettings),
-        });
+        const [savedSettings, tradingStatus] = await Promise.all([
+          requestJson<CopySettings>("/api/live/copy-settings", 30_000),
+          requestJson<LiveTradingStatus>("/api/live/live-trading", 30_000),
+        ]);
         setSettings(savedSettings);
+        setLiveStatus(tradingStatus);
+        setSettingsLoaded(true);
         const serverTrades = await requestJson<{ positions: LivePaperPosition[]; skipped: SkippedPaperTrade[] }>("/api/live/copy-monitor", 30_000, { method: "PUT" });
         setPositions(current => serverTrades.positions.length ? serverTrades.positions.map(position => {
           const existing = current.find(item => item.id === position.id);
@@ -1244,6 +1305,15 @@ export function TradingApp() {
     })();
   }, []);
 
+  useEffect(() => {
+    if (!hydrated || !settingsLoaded) return;
+    const refresh = () => void requestJson<LiveTradingStatus>("/api/live/live-trading", 30_000)
+      .then(setLiveStatus)
+      .catch(() => undefined);
+    const timer = window.setInterval(refresh, 30_000);
+    return () => window.clearInterval(timer);
+  }, [hydrated, settingsLoaded]);
+
   useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.wallets, JSON.stringify(wallets)); }, [wallets, hydrated]);
   useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.positions, JSON.stringify(positions)); }, [positions, hydrated]);
   useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.skipped, JSON.stringify(skipped)); }, [skipped, hydrated]);
@@ -1251,16 +1321,19 @@ export function TradingApp() {
   useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.favorites, JSON.stringify(favorites)); }, [favorites, hydrated]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !settingsLoaded) return;
     const timer = window.setTimeout(() => {
       void requestJson<CopySettings>("/api/live/copy-settings", 30_000, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(settings),
-      }).catch(syncError => setError(syncError instanceof Error ? syncError.message : "コピー設定のDB保存に失敗しました"));
+      }).catch(syncError => {
+        setError(syncError instanceof Error ? syncError.message : "コピー設定のDB保存に失敗しました");
+        void requestJson<CopySettings>("/api/live/copy-settings", 30_000).then(setSettings).catch(() => undefined);
+      });
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [hydrated, settings]);
+  }, [hydrated, settings, settingsLoaded]);
 
   const syncServerMonitor = useCallback(async () => {
     await requestJson("/api/live/copy-monitor", 30_000);
@@ -1282,21 +1355,16 @@ export function TradingApp() {
   }, [hydrated, syncServerMonitor]);
 
   const closePosition = useCallback((position: LivePaperPosition, reason: string, exitPrice = position.currentPriceUsd) => {
-    setPositions(current => current.map(item => item.id === position.id ? {
-      ...item,
-      status: "CLOSED",
-      closedAt: new Date().toISOString(),
-      exitPriceUsd: exitPrice,
-      exitReason: reason,
-    } : item));
-    void requestJson("/api/live/copy-monitor", 30_000, {
+    void requestJson("/api/live/copy-monitor", 90_000, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ id: position.id, exitPriceUsd: exitPrice, reason }),
-    }).catch(closeError => setError(closeError instanceof Error ? closeError.message : "手動決済のDB保存に失敗しました"));
-  }, []);
+    }).then(() => syncServerMonitor())
+      .catch(closeError => setError(closeError instanceof Error ? closeError.message : "手動決済に失敗しました"));
+  }, [syncServerMonitor]);
 
   const processNewEvent = useCallback(async (wallet: TrackedWallet, event: LiveWalletEvent) => {
+    if (settingsRef.current.liveTradingEnabled) return;
     const key = `${event.signature}:${event.mint}:${event.side}`;
     if (processedRef.current.has(key)) return;
     processedRef.current.add(key);
@@ -1552,7 +1620,7 @@ export function TradingApp() {
           })}
         </nav>
         <div className="absolute bottom-0 left-0 right-0 border-t border-white/[0.07] p-4">
-          <div className="mb-3 flex items-center justify-between"><span className="text-xs text-[#7b8b91]">運用モード</span><Badge tone="amber">PAPER ONLY</Badge></div>
+          <div className="mb-3 flex items-center justify-between"><span className="text-xs text-[#7b8b91]">運用モード</span><Badge tone={settings.liveTradingEnabled ? "red" : "amber"}>{settings.liveTradingEnabled ? "LIVE" : "PAPER"}</Badge></div>
           <div className="rounded-xl bg-white/[0.03] p-3">
             <div className="flex items-center gap-2 text-xs"><span className="live-dot h-2 w-2 rounded-full bg-[#38e7ae]" />Solana Mainnet</div>
             <p className="mt-1.5 text-[10px] text-[#5f7077]">市場データ：実データ</p>
@@ -1574,7 +1642,7 @@ export function TradingApp() {
             <span className="hidden text-sm font-medium lg:inline">{currentTitle}</span>
           </div>
           <div className="flex items-center gap-3">
-            <div className="hidden text-right sm:block"><p className="text-[10px] text-[#64747a]">仮想残高</p><p className="text-sm font-semibold tabular-nums">{money(paperBalance)}</p></div>
+            <div className="hidden text-right sm:block"><p className="text-[10px] text-[#64747a]">{settings.liveTradingEnabled ? "取引USDC残高" : "仮想残高"}</p><p className="text-sm font-semibold tabular-nums">{settings.liveTradingEnabled && liveStatus?.usdcBalance != null ? `${liveStatus.usdcBalance.toFixed(2)} USDC` : money(paperBalance)}</p></div>
             <WalletMultiButton />
           </div>
         </header>
@@ -1582,15 +1650,15 @@ export function TradingApp() {
           {error && <div className="mb-4 flex items-start gap-3 rounded-xl border border-rose-400/20 bg-rose-400/[0.07] p-4 text-sm text-rose-200"><X size={17} className="mt-0.5 shrink-0" /><span className="min-w-0 flex-1 whitespace-pre-wrap break-all leading-relaxed">{error}</span><button onClick={() => setError(null)} className="text-xs">閉じる</button></div>}
           <div className="mb-4 flex flex-wrap gap-2 text-[11px]">
             <Badge tone="green"><ShieldCheck size={12} className="mr-1" />実ウォレットデータのみ</Badge>
-            <Badge tone="amber"><CircleDollarSign size={12} className="mr-1" />資金はデモ</Badge>
+            <Badge tone={settings.liveTradingEnabled ? "red" : "amber"}><CircleDollarSign size={12} className="mr-1" />{settings.liveTradingEnabled ? "実資金モード" : "資金はデモ"}</Badge>
             <Badge tone="gray">手動10件 + 自動5件</Badge>
           </div>
-          {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} onClose={closePosition} />}
+          {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} liveMode={settings.liveTradingEnabled} liveStatus={liveStatus} onClose={closePosition} />}
           {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={removeWallet} onToggle={toggleWallet} onStopAll={stopAllWallets} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
           {view === "scanner" && <Scanner network={scanNetwork} onNetworkChange={setScanNetwork} result={scanResult} scanState={scanState} scanning={scanState?.status === "RUNNING"} wallets={wallets} autoCount={wallets.filter(wallet => wallet.origin === "AUTO" && (wallet.network ?? "SOLANA") === scanNetwork).length} onScan={scan} onAddCandidate={addScanCandidate} />}
           {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} />}
           {view === "activity" && <MobileActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}
-          {view === "settings" && <SettingsView settings={settings} onChange={setSettings} />}
+          {view === "settings" && <SettingsView settings={settings} liveStatus={liveStatus} onChange={setSettings} />}
         </main>
       </div>
     </div>

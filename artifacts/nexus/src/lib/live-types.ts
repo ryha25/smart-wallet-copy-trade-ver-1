@@ -176,6 +176,9 @@ export type LivePaperPosition = {
   amountUsd: number;
   liquidityUsd: number;
   status: "OPEN" | "CLOSED";
+  executionMode?: "PAPER" | "LIVE";
+  buySignature?: string;
+  sellSignature?: string;
   closedAt?: string;
   exitPriceUsd?: number;
   exitReason?: string;

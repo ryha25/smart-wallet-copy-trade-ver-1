@@ -2,6 +2,7 @@ import type { CopySettings } from "./types";
 
 export const defaultSettings: CopySettings = {
   enabled: true,
+  liveTradingEnabled: false,
   amountPerTrade: 250,
   maxPositions: 8,
   maxDailyAmount: 1500,

@@ -5,6 +5,7 @@ import {
   getCopyMonitorStatus,
   installCopyMonitor,
   runCopyMonitorCycle,
+  settlePositionById,
 } from "../../../services/copy-monitor";
 
 export async function GET(request: Request) {
@@ -60,6 +61,9 @@ export async function PUT(request: Request) {
         amountUsd: Number(position.amountUsd),
         liquidityUsd: 0,
         status: position.status === "OPEN" ? "OPEN" : "CLOSED",
+        executionMode: position.executionMode,
+        buySignature: position.buySignature ?? undefined,
+        sellSignature: position.sellSignature ?? undefined,
         closedAt: position.closedAt?.toISOString(),
         exitPriceUsd: position.exitPriceUsd ? Number(position.exitPriceUsd) : undefined,
         exitReason: position.settlementReason ?? undefined,
@@ -84,27 +88,9 @@ export async function PATCH(request: Request) {
     const unauthorized = await requireAppSession(request);
     if (unauthorized) return unauthorized;
     if (!prisma) throw new Error("DATABASE_URLが未設定です");
-    const body = await request.json() as { id?: string; exitPriceUsd?: number; reason?: string };
-    if (!body.id || !Number.isFinite(body.exitPriceUsd) || Number(body.exitPriceUsd) <= 0) {
-      throw new Error("決済対象と決済価格を確認してください");
-    }
-    const position = await prisma.paperPosition.findUniqueOrThrow({ where: { id: body.id } });
-    const exitPrice = Number(body.exitPriceUsd);
-    const entryPrice = Number(position.copyPriceUsd);
-    const pnlPercent = (exitPrice - entryPrice) / entryPrice * 100;
-    const pnlUsd = Number(position.amountUsd) * pnlPercent / 100;
-    const updated = await prisma.paperPosition.update({
-      where: { id: position.id },
-      data: {
-        status: "CLOSED",
-        closedAt: new Date(),
-        exitPriceUsd: exitPrice,
-        pnlPercent,
-        pnlUsd,
-        pnlSol: 0,
-        settlementReason: "MANUAL",
-      },
-    });
+    const body = await request.json() as { id?: string; exitPriceUsd?: number };
+    if (!body.id) throw new Error("決済対象を確認してください");
+    const updated = await settlePositionById(body.id, "MANUAL", body.exitPriceUsd);
     return Response.json({ id: updated.id, status: updated.status }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     return Response.json(apiError(error, "copy-monitor.settle"), { status: 400 });
