@@ -6,7 +6,7 @@ import { installCopyMonitor, runCopyMonitorCycle } from "../../../services/copy-
 
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const EVM_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
-const NETWORKS = new Set<ChainNetwork>(["SOLANA", "ETHEREUM", "BASE"]);
+const NETWORKS = new Set<ChainNetwork>(["SOLANA", "ETHEREUM"]);
 const ORIGINS = new Set<TrackedWallet["origin"]>(["MANUAL", "AUTO", "FAVORITE"]);
 
 function databaseRequired() {
@@ -63,7 +63,10 @@ export async function GET(request: Request) {
     if (unauthorized) return unauthorized;
     const db = databaseRequired();
     installCopyMonitor();
-    const wallets = await db.trackedWallet.findMany({ orderBy: { createdAt: "asc" } });
+    const wallets = await db.trackedWallet.findMany({
+      where: { network: { in: ["SOLANA", "ETHEREUM"] } },
+      orderBy: { createdAt: "asc" },
+    });
     return Response.json(wallets.map(mapWallet), { headers: { "cache-control": "no-store" } });
   } catch (error) {
     return Response.json(apiError(error, "tracked-wallets.list"), { status: 500 });

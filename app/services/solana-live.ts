@@ -543,13 +543,15 @@ function scoreWallet(address: string, events: LiveWalletEvent[], ageDays: number
 
   const warnings: string[] = [];
   const blockers: string[] = [];
-  if (roi30d < 60) warnings.push("30日ROIが60%未満");
-  if (realizedProfitUsd <= 0) warnings.push("30日確定利益がプラスではない");
+  if (roi30d > 0 && roi30d < 20) warnings.push("30日ROIが20%未満（低水準）");
+  else if (roi30d >= 20 && roi30d < 60) warnings.push("30日ROIが60%未満（採用可能・注意）");
   if (winRate < 60) warnings.push("勝率が60%未満");
   if (events.length < 20) warnings.push("30日売買件数が20件未満");
   if (avgTradesPerDay < 1) warnings.push("1日平均取引回数が1回未満");
   if (activeTradingDays < 10) warnings.push("取引日の継続性が不足");
   if (ageDays < 90) warnings.push("初回取引から90日未満");
+  if (roi30d <= 0) blockers.push("30日確定ROIがプラスではない");
+  if (realizedProfitUsd <= 0) blockers.push("30日確定利益がプラスではない");
   if (sellEvents === 0) blockers.push("売却履歴なし");
   if (closed.length < 3) warnings.push("複数の決済実績が不足");
   if (profitableWeeks < 2) warnings.push("利益継続性が不足");

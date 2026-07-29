@@ -20,6 +20,7 @@ import { defaultSettings } from "../lib/default-settings";
 import { calculatePaperPnl, evaluateCopySignal } from "../lib/paper-trading";
 import type {
   ChainNetwork,
+  EvmNativePrice,
   LivePaperPosition,
   FavoriteToken,
   FavoriteWalletScanResponse,
@@ -473,6 +474,33 @@ function Scanner({
   onAddCandidate: (wallet: WalletScore, rank: number) => void;
 }) {
   const [sortBy, setSortBy] = useState<WalletSort>("score");
+  const [ethereumPrice, setEthereumPrice] = useState<EvmNativePrice | null>(null);
+  const [ethereumPriceError, setEthereumPriceError] = useState<string | null>(null);
+  useEffect(() => {
+    if (network !== "ETHEREUM") {
+      setEthereumPrice(null);
+      setEthereumPriceError(null);
+      return;
+    }
+    let cancelled = false;
+    const refreshPrice = async () => {
+      try {
+        const price = await requestJson<EvmNativePrice>("/api/live/evm-price", 30_000);
+        if (!cancelled) {
+          setEthereumPrice(price);
+          setEthereumPriceError(null);
+        }
+      } catch (error) {
+        if (!cancelled) setEthereumPriceError(error instanceof Error ? error.message : "ETH価格を取得できません");
+      }
+    };
+    void refreshPrice();
+    const timer = window.setInterval(() => void refreshPrice(), 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [network]);
   const sortedWallets = useMemo(() => {
     const pool = result?.rankingPool ?? result?.evaluated ?? [];
     return [...pool].sort((a, b) => {
@@ -496,7 +524,6 @@ function Scanner({
         {([
           ["SOLANA", "Solana"],
           ["ETHEREUM", "Ethereum"],
-          ["BASE", "Base"],
         ] as const).map(([value, label]) => (
           <button
             key={value}
@@ -523,7 +550,17 @@ function Scanner({
           <Radar size={16} className={scanning ? "animate-spin" : ""} /> {scanning ? "実データを分析中…" : "今すぐスキャン"}
         </button>
       </div>
-      <div className="mb-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="mb-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        {network === "ETHEREUM" && (
+          <Metric
+            label="ETH現在価格"
+            value={ethereumPrice ? money(ethereumPrice.priceUsd) : "—"}
+            detail={ethereumPrice
+              ? `24時間 ${ethereumPrice.priceChange24h === null ? "変動率未取得" : pct(ethereumPrice.priceChange24h)}・1分更新`
+              : ethereumPriceError ?? "Moralisから取得中"}
+            accent={Boolean(ethereumPrice)}
+          />
+        )}
         <Metric label="採用候補枠" value={`${autoCount} / 5`} detail="追加時はコピーOFF" />
         <Metric label="重複除外後の発見数" value={String(scanState?.discoveredCandidates || result?.discoveredCandidates || "—")} detail="複数DEX横断" />
         <Metric label="今回の解析数" value={scanState?.targetCandidates ? `${scanState.analyzedCandidates} / ${scanState.targetCandidates}` : result ? String(result.scannedCandidates) : "—"} detail={scanState ? `解析成功 ${scanState.successfulAnalyses}件` : result ? `解析成功 ${result.successfulAnalyses}件` : "架空データでの補充なし"} />
@@ -643,9 +680,10 @@ function Scanner({
         ) : !scanning && <EmptyState title="まだスキャン結果がありません" detail="実行すると実データの上位10件を査定します。候補追加後もコピーはOFFのままです。" />}
       </Card>
       <div className="mt-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-4 text-xs leading-6 text-amber-100/70">
+        <p className="mb-2 text-amber-200">30日ROI 60%以上は必須条件ではなく高評価基準です。ROIがプラスかつ確定利益がプラスなら、60%未満でも注意付きで採用候補に追加できます。</p>
         {network === "SOLANA"
           ? "Solana全履歴の完全走査ではありません。Jupiter・Raydium・Orca・Meteora・Pump.fun・PumpSwapの直近取引から重複を除外して候補を抽出し、設定された解析上限まで30日履歴を評価します。"
-          : "EVM全履歴の完全走査ではありません。設定された実トークンの上位トレーダーを重複除外し、確定損益を評価します。EVMのコピー監視はまだ開始せず、採用候補はコピーOFFで保存します。"}
+          : "Ethereum全履歴の完全走査ではありません。設定された実トークンの上位トレーダーを重複除外し、確定損益を評価します。Ethereumのコピー監視はまだ開始せず、採用候補はコピーOFFで保存します。"}
       </div>
     </>
   );
@@ -1334,7 +1372,7 @@ export function TradingApp() {
 
   const refreshWallet = useCallback(async (wallet: TrackedWallet, analyze = false) => {
     if ((wallet.network ?? "SOLANA") !== "SOLANA") {
-      setError("Ethereum／Baseの採用候補は現在ランキング保存のみです。EVMペーパートレード監視は次の実装で有効化します。");
+      setError("Ethereumの採用候補は現在ランキング保存のみです。Ethereumペーパートレード監視は次の実装で有効化します。");
       return;
     }
     setBusy(wallet.address);
@@ -1443,7 +1481,7 @@ export function TradingApp() {
       const candidate: TrackedWallet = {
         network,
         address: score.address,
-        label: `${network === "SOLANA" ? "SOL" : network === "ETHEREUM" ? "ETH" : "BASE"} 採用候補 #${rank}`,
+        label: `${network === "SOLANA" ? "SOL" : "ETH"} 採用候補 #${rank}`,
         origin: "AUTO",
         enabled: false,
         addedAt: new Date().toISOString(),

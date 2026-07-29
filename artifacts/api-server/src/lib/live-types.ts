@@ -149,6 +149,14 @@ export type CopyMonitorStatus = {
 
 export type ChainNetwork = "SOLANA" | "ETHEREUM" | "BASE";
 
+export type EvmNativePrice = {
+  network: "ETHEREUM";
+  symbol: "ETH";
+  priceUsd: number;
+  priceChange24h: number | null;
+  fetchedAt: string;
+};
+
 export type FavoriteToken = LiveTokenQuote & {
   addedAt: string;
 };

@@ -1,4 +1,4 @@
-import type { ChainNetwork, WalletScanResponse, WalletScore } from "../lib/live-types";
+import type { ChainNetwork, EvmNativePrice, WalletScanResponse, WalletScore } from "../lib/live-types";
 
 export type EvmNetwork = Extract<ChainNetwork, "ETHEREUM" | "BASE">;
 
@@ -62,6 +62,27 @@ const numberValue = (value: unknown) => {
   const parsed = typeof value === "number" ? value : Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+export async function getEthereumPrice(): Promise<EvmNativePrice> {
+  const moralisKey = process.env.MORALIS_API_KEY?.trim();
+  if (!moralisKey) throw new Error("Ethereum価格の取得にはMORALIS_API_KEYが必要です");
+  const wrappedEth = DEFAULT_DISCOVERY_TOKENS.ETHEREUM[0];
+  const payload = await fetchJson<{
+    usdPrice?: number | string;
+    usdPriceFormatted?: string;
+    "24hrPercentChange"?: number | string | null;
+  }>(`${MORALIS_BASE}/erc20/${wrappedEth}/price?chain=eth`, moralisKey);
+  const priceUsd = numberValue(payload.usdPrice ?? payload.usdPriceFormatted);
+  if (priceUsd <= 0) throw new Error("Moralisから有効なETH価格を取得できませんでした");
+  const change = payload["24hrPercentChange"];
+  return {
+    network: "ETHEREUM",
+    symbol: "ETH",
+    priceUsd,
+    priceChange24h: change === null || change === undefined ? null : numberValue(change),
+    fetchedAt: new Date().toISOString(),
+  };
+}
 
 function configuredTokens(network: EvmNetwork) {
   const key = network === "ETHEREUM" ? "EVM_ETH_DISCOVERY_TOKENS" : "EVM_BASE_DISCOVERY_TOKENS";
@@ -168,15 +189,17 @@ function buildScore(
   if (avgTradesPerDay < 1) warnings.push("1日平均取引回数が1回未満");
   if (profitableRows.length < 3) warnings.push("利益継続性の確認対象が少ない");
   if (concentration > 0.65) warnings.push("特定銘柄への利益集中");
+  if (roi > 0 && roi < 20) warnings.push("30日ROIが20%未満（低水準）");
+  else if (roi >= 20 && roi < 60) warnings.push("30日ROIが60%未満（採用可能・注意）");
 
   const blockers: string[] = [];
   if (!eoa) blockers.push("DEX・流動性プール・プログラムアドレス");
+  if (roi <= 0) blockers.push("30日確定ROIがプラスではない");
+  if (realized <= 0) blockers.push("30日確定利益がプラスではない");
   if (sells === 0) blockers.push("売却履歴なし");
   if (score === 0 && blockers.length === 0) blockers.push("スコア0");
 
   const qualified = blockers.length === 0
-    && roi >= 60
-    && realized > 0
     && trades >= 20
     && winRate >= 60
     && profitableRows.length >= 2;

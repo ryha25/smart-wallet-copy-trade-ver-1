@@ -21,7 +21,7 @@ function idleState(network: EvmNetwork): WalletScanState {
     id: null,
     status: "IDLE",
     phase: "IDLE",
-    message: `${network === "ETHEREUM" ? "Ethereum" : "Base"}の保存済みランキングはありません`,
+    message: "Ethereumの保存済みランキングはありません",
     discoveredCandidates: 0,
     targetCandidates: 0,
     analyzedCandidates: 0,
@@ -72,8 +72,8 @@ function runToState(network: EvmNetwork, run: {
 
 export function parseEvmNetwork(value: string | null): EvmNetwork {
   const normalized = value?.trim().toUpperCase();
-  if (normalized === "ETHEREUM" || normalized === "BASE") return normalized;
-  throw new Error("networkはETHEREUMまたはBASEを指定してください");
+  if (normalized === "ETHEREUM") return normalized;
+  throw new Error("networkはETHEREUMを指定してください");
 }
 
 export async function getEvmScanState(network: EvmNetwork) {
@@ -182,7 +182,7 @@ export async function startEvmScan(network: EvmNetwork) {
         network,
         status: "RUNNING",
         phase: "DISCOVERING",
-        message: `${network === "ETHEREUM" ? "Ethereum" : "Base"}スキャンを開始しました`,
+        message: "Ethereumスキャンを開始しました",
       },
     });
     runId = run.id;
@@ -192,7 +192,7 @@ export async function startEvmScan(network: EvmNetwork) {
     id: runId,
     status: "RUNNING",
     phase: "DISCOVERING",
-    message: `${network === "ETHEREUM" ? "Ethereum" : "Base"}の実データ候補を収集中`,
+    message: "Ethereumの実データ候補を収集中",
     startedAt: startedAt.toISOString(),
     result: current.result,
     completedAt: current.completedAt,
@@ -267,7 +267,7 @@ async function runBackground(network: EvmNetwork, runId: string) {
       ...runtime.state,
       status: "FAILED",
       phase: "FAILED",
-      message: `${network === "ETHEREUM" ? "Ethereum" : "Base"}スキャンに失敗しました`,
+      message: "Ethereumスキャンに失敗しました",
       completedAt: completedAt.toISOString(),
       error: message,
     };

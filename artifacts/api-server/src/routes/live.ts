@@ -22,6 +22,7 @@ import {
   parseEvmNetwork,
   startEvmScan,
 } from "../services/evm-wallet-scan-manager";
+import { getEthereumPrice } from "../services/evm-live";
 import {
   getCopyMonitorStatus,
   getOrCreateCopySettings,
@@ -147,6 +148,15 @@ router.post("/evm-scan", async (request, response) => {
   }
 });
 
+router.get("/evm-price", async (_request, response) => {
+  try {
+    const data = await getEthereumPrice();
+    response.setHeader("cache-control", "no-store").json(data);
+  } catch (error) {
+    response.status(500).json(apiError(error, "evm.ethereum.price"));
+  }
+});
+
 const mapTrackedWallet = (wallet: {
   id: string;
   network: string;
@@ -171,6 +181,7 @@ const mapTrackedWallet = (wallet: {
 
 function trackedWalletInput(body: Partial<TrackedWallet>) {
   const network = (body.network ?? "SOLANA").toUpperCase() as ChainNetwork;
+  if (network !== "SOLANA" && network !== "ETHEREUM") throw new Error("未対応ネットワークです");
   const address = String(body.address ?? "").trim();
   const origin = body.origin ?? "MANUAL";
   const valid = network === "SOLANA"
@@ -190,7 +201,10 @@ router.get("/tracked-wallets", async (_request, response) => {
   try {
     if (!prisma) throw new Error("DATABASE_URLが未設定です");
     installCopyMonitor();
-    const wallets = await prisma.trackedWallet.findMany({ orderBy: { createdAt: "asc" } });
+    const wallets = await prisma.trackedWallet.findMany({
+      where: { network: { in: ["SOLANA", "ETHEREUM"] } },
+      orderBy: { createdAt: "asc" },
+    });
     response.setHeader("cache-control", "no-store").json(wallets.map(mapTrackedWallet));
   } catch (error) {
     response.status(500).json(apiError(error, "tracked-wallets.list"));
