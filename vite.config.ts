@@ -49,13 +49,17 @@ export default defineConfig(async () => {
     || process.env.REPLIT_DEPLOYMENT,
   );
   if (isReplit) {
-    return { plugins: [vinext()] };
+    return {
+      plugins: [vinext()],
+      ssr: { external: ["@prisma/client", "prisma"] },
+    };
   }
 
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    ssr: { external: ["@prisma/client", "prisma"] },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,

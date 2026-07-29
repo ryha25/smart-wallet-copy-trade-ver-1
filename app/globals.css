@@ -15,8 +15,19 @@
 }
 
 * { box-sizing: border-box; }
-html { background: var(--bg); }
+html, body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+html {
+  min-height: 100%;
+  background: var(--bg);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 body {
+  min-height: 100%;
   margin: 0;
   background:
     radial-gradient(circle at 80% -10%, rgba(46,230,166,.08), transparent 30rem),
@@ -25,6 +36,7 @@ body {
   font-family: Inter, "Noto Sans JP", system-ui, sans-serif;
 }
 button, input, select { font: inherit; }
+input, select, textarea { font-size: 16px; }
 button { cursor: pointer; }
 ::selection { background: rgba(46,230,166,.3); }
 .scrollbar-none::-webkit-scrollbar { display: none; }

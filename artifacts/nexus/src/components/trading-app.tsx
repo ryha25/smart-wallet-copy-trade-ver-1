@@ -101,7 +101,7 @@ const pct = (value: number) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 const shortAddress = (address: string) => `${address.slice(0, 5)}…${address.slice(-5)}`;
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <section className={`rounded-2xl border border-white/[0.07] bg-[#101619] ${className}`}>{children}</section>;
+  return <section className={`min-w-0 max-w-full rounded-2xl border border-white/[0.07] bg-[#101619] ${className}`}>{children}</section>;
 }
 
 function SectionHeader({
@@ -211,7 +211,7 @@ function Field({
           value={value}
           placeholder={placeholder}
           onChange={event => onChange(type === "number" ? Number(event.target.value) : event.target.value)}
-          className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm text-white outline-none placeholder:text-[#455158]"
+          className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-base text-white outline-none placeholder:text-[#455158]"
         />
         {suffix && <span className="pr-3 text-xs text-[#65747a]">{suffix}</span>}
       </div>
@@ -269,7 +269,7 @@ function Dashboard({
         <Badge tone={lastRefresh ? "green" : "gray"}>{lastRefresh ? `最終更新 ${new Date(lastRefresh).toLocaleTimeString("ja-JP")}` : "未取得"}</Badge>
       </div>
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <Metric label="監視中コピー元" value={`${wallets.filter(wallet => wallet.enabled).length} / 15`} detail={`手動 ${wallets.filter(w => w.origin === "MANUAL").length}/10・自動 ${wallets.filter(w => w.origin === "AUTO").length}/5`} />
+        <Metric label="監視中コピー元" value={`${wallets.filter(wallet => wallet.enabled).length} / 15`} detail={`手動・お気に入り ${wallets.filter(w => w.origin !== "AUTO").length}/10・自動 ${wallets.filter(w => w.origin === "AUTO").length}/5`} />
         <Metric label="ペーパートレード残高" value={money(INITIAL_PAPER_BALANCE + realized + unrealized)} detail="開始残高 $10,000（仮想資金）" accent />
         <Metric label="確定損益" value={money(realized, true)} detail={`${closed.length}件決済`} accent={realized >= 0} />
         <Metric label="勝率" value={closed.length ? `${(wins / closed.length * 100).toFixed(1)}%` : "—"} detail="決済済みペーパートレードのみ" />
@@ -362,7 +362,7 @@ function Sources({
   const [address, setAddress] = useState("");
   const [label, setLabel] = useState("");
   const [message, setMessage] = useState<string | null>(null);
-  const manualCount = wallets.filter(wallet => wallet.origin === "MANUAL").length;
+  const manualCount = wallets.filter(wallet => wallet.origin !== "AUTO").length;
   const autoCount = wallets.filter(wallet => wallet.origin === "AUTO").length;
   const enabledCount = wallets.filter(wallet => wallet.enabled).length;
   const submit = () => {
@@ -424,7 +424,7 @@ function Sources({
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="font-semibold">{wallet.label || shortAddress(wallet.address)}</h3>
-                          <Badge tone={wallet.origin === "MANUAL" ? "gray" : "green"}>{wallet.origin === "MANUAL" ? "手動" : "採用候補"}</Badge>
+                          <Badge tone={wallet.origin === "AUTO" ? "green" : "gray"}>{wallet.origin === "AUTO" ? "採用候補" : wallet.origin === "FAVORITE" ? "お気に入り経由" : "手動"}</Badge>
                           <Badge tone="gray">{wallet.network ?? "SOLANA"}</Badge>
                           {wallet.score && <Badge tone={wallet.score.qualified ? "green" : "amber"}>{wallet.score.score}点</Badge>}
                         </div>
@@ -662,7 +662,7 @@ function FavoritesView({
   activities: ActivityByWallet;
   onAdd: (mint: string) => Promise<string | null>;
   onDelete: (mint: string) => void;
-  onAddManual: (address: string, label: string) => string | null;
+  onAddManual: (address: string, label: string, origin?: TrackedWallet["origin"]) => string | null;
 }) {
   const [mint, setMint] = useState("");
   const [adding, setAdding] = useState(false);
@@ -775,7 +775,7 @@ function FavoritesView({
                               </div>
                               <button
                                 onClick={() => {
-                                  const result = onAddManual(wallet.address, `${token.symbol} 上位 #${index + 1}`);
+                                  const result = onAddManual(wallet.address, `${token.symbol} 上位 #${index + 1}`, "FAVORITE");
                                   setMessage(result ?? "手動コピー元へ登録しました");
                                 }}
                                 className="rounded-lg border border-[#38e7ae]/30 bg-[#38e7ae]/10 px-3 py-2 text-xs font-medium text-[#38e7ae] hover:bg-[#38e7ae]/20"
@@ -924,6 +924,22 @@ function HistoryAccordion({
       {open && <div className="border-t border-white/[0.07]">{renderContent()}</div>}
     </Card>
   );
+}
+
+async function saveTrackedWallet(wallet: TrackedWallet, method: "POST" | "PATCH" = "POST") {
+  return requestJson<TrackedWallet>("/api/live/tracked-wallets", 30_000, {
+    method,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(wallet),
+  });
+}
+
+async function deleteTrackedWallet(wallet: TrackedWallet) {
+  return requestJson<{ deleted: boolean }>("/api/live/tracked-wallets", 30_000, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(wallet),
+  });
 }
 
 function MobileActivityView({
@@ -1100,7 +1116,6 @@ export function TradingApp() {
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const processedRef = useRef(new Set<string>());
-  const initializedRef = useRef(new Set<string>());
   const walletsRef = useRef(wallets);
   const settingsRef = useRef(settings);
   const positionsRef = useRef(positions);
@@ -1154,13 +1169,41 @@ export function TradingApp() {
         return fallback;
       }
     };
-    setWallets(load(STORAGE.wallets, []));
-    setPositions(load(STORAGE.positions, []));
-    setSkipped(load(STORAGE.skipped, []));
+    const cachedWallets = load<TrackedWallet[]>(STORAGE.wallets, []);
+    const cachedPositions = load<LivePaperPosition[]>(STORAGE.positions, []);
+    const cachedSkipped = load<SkippedPaperTrade[]>(STORAGE.skipped, []);
+    const cachedSettings = { ...defaultSettings, ...load<Partial<CopySettings>>(STORAGE.settings, {}) };
+    setWallets(cachedWallets);
+    setPositions(cachedPositions);
+    setSkipped(cachedSkipped);
     setFavorites(load(STORAGE.favorites, []));
-    setSettings({ ...defaultSettings, ...load<Partial<CopySettings>>(STORAGE.settings, {}) });
+    setSettings(cachedSettings);
     processedRef.current = new Set(load<string[]>(STORAGE.processed, []));
     setHydrated(true);
+    void (async () => {
+      try {
+        let storedWallets = await requestJson<TrackedWallet[]>("/api/live/tracked-wallets", 30_000);
+        if (storedWallets.length === 0 && cachedWallets.length > 0) {
+          storedWallets = [];
+          for (const wallet of cachedWallets) storedWallets.push(await saveTrackedWallet(wallet));
+        }
+        setWallets(storedWallets);
+        const savedSettings = await requestJson<CopySettings>("/api/live/copy-settings", 30_000, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(cachedSettings),
+        });
+        setSettings(savedSettings);
+        const serverTrades = await requestJson<{ positions: LivePaperPosition[]; skipped: SkippedPaperTrade[] }>("/api/live/copy-monitor", 30_000, { method: "PUT" });
+        setPositions(current => serverTrades.positions.length ? serverTrades.positions.map(position => {
+          const existing = current.find(item => item.id === position.id);
+          return existing && position.status === "OPEN" ? { ...position, currentPriceUsd: existing.currentPriceUsd } : position;
+        }) : current);
+        setSkipped(current => serverTrades.skipped.length ? serverTrades.skipped : current);
+      } catch (syncError) {
+        setError(syncError instanceof Error ? syncError.message : "DB保存データの同期に失敗しました");
+      }
+    })();
   }, []);
 
   useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.wallets, JSON.stringify(wallets)); }, [wallets, hydrated]);
@@ -1168,6 +1211,37 @@ export function TradingApp() {
   useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.skipped, JSON.stringify(skipped)); }, [skipped, hydrated]);
   useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.settings, JSON.stringify(settings)); }, [settings, hydrated]);
   useEffect(() => { if (hydrated) localStorage.setItem(STORAGE.favorites, JSON.stringify(favorites)); }, [favorites, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const timer = window.setTimeout(() => {
+      void requestJson<CopySettings>("/api/live/copy-settings", 30_000, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(settings),
+      }).catch(syncError => setError(syncError instanceof Error ? syncError.message : "コピー設定のDB保存に失敗しました"));
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [hydrated, settings]);
+
+  const syncServerMonitor = useCallback(async () => {
+    await requestJson("/api/live/copy-monitor", 30_000);
+    const payload = await requestJson<{ positions: LivePaperPosition[]; skipped: SkippedPaperTrade[] }>("/api/live/copy-monitor", 30_000, { method: "PUT" });
+    setPositions(current => payload.positions.map(position => {
+      const existing = current.find(item => item.id === position.id);
+      return existing && position.status === "OPEN" ? { ...position, currentPriceUsd: existing.currentPriceUsd } : position;
+    }));
+    setSkipped(payload.skipped);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    void syncServerMonitor().catch(syncError => setError(syncError instanceof Error ? syncError.message : "コピー監視状態の取得に失敗しました"));
+    const timer = window.setInterval(() => {
+      void syncServerMonitor().catch(syncError => setError(syncError instanceof Error ? syncError.message : "コピー監視状態の更新に失敗しました"));
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [hydrated, syncServerMonitor]);
 
   const closePosition = useCallback((position: LivePaperPosition, reason: string, exitPrice = position.currentPriceUsd) => {
     setPositions(current => current.map(item => item.id === position.id ? {
@@ -1177,6 +1251,11 @@ export function TradingApp() {
       exitPriceUsd: exitPrice,
       exitReason: reason,
     } : item));
+    void requestJson("/api/live/copy-monitor", 30_000, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: position.id, exitPriceUsd: exitPrice, reason }),
+    }).catch(closeError => setError(closeError instanceof Error ? closeError.message : "手動決済のDB保存に失敗しました"));
   }, []);
 
   const processNewEvent = useCallback(async (wallet: TrackedWallet, event: LiveWalletEvent) => {
@@ -1286,22 +1365,15 @@ export function TradingApp() {
         const scorePayload = await scoreResponse.json() as WalletScore & { error?: string };
         if (scoreResponse.ok) setWallets(current => current.map(item => item.address === wallet.address ? { ...item, score: scorePayload } : item));
       }
-      if (!initializedRef.current.has(wallet.address)) {
-        activityPayload.events.forEach(event => processedRef.current.add(`${event.signature}:${event.mint}:${event.side}`));
-        initializedRef.current.add(wallet.address);
-        localStorage.setItem(STORAGE.processed, JSON.stringify([...processedRef.current].slice(-2000)));
-      } else {
-        for (const event of [...activityPayload.events].sort((a, b) => a.blockTime - b.blockTime)) {
-          await processNewEvent(wallet, event);
-        }
-      }
+      activityPayload.events.forEach(event => processedRef.current.add(`${event.signature}:${event.mint}:${event.side}`));
+      localStorage.setItem(STORAGE.processed, JSON.stringify([...processedRef.current].slice(-2000)));
       setLastRefresh(new Date().toISOString());
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : "更新に失敗しました");
     } finally {
       setBusy(null);
     }
-  }, [processNewEvent]);
+  }, []);
 
   const refreshAll = useCallback(async () => {
     for (const wallet of walletsRef.current.filter(item => item.enabled && (item.network ?? "SOLANA") === "SOLANA")) await refreshWallet(wallet);
@@ -1313,17 +1385,30 @@ export function TradingApp() {
     return () => window.clearInterval(timer);
   }, [hydrated, settings.enabled, refreshAll]);
 
-  const addManual = (address: string, label: string) => {
+  const addManual = (address: string, label: string, origin: TrackedWallet["origin"] = "MANUAL") => {
     if (!ADDRESS_PATTERN.test(address)) return "Solanaウォレットアドレスを確認してください";
-    const manualCount = wallets.filter(wallet => wallet.origin === "MANUAL").length;
+    const manualCount = wallets.filter(wallet => wallet.origin !== "AUTO").length;
     const existing = wallets.find(wallet => wallet.address === address);
-    if (existing?.origin === "MANUAL") return "このアドレスは登録済みです";
+    if (existing && existing.origin !== "AUTO") return "このアドレスは登録済みです";
     if (manualCount >= 10) return "手動登録は最大10件です";
     if (existing) {
-      setWallets(current => current.map(wallet => wallet.address === address ? { ...wallet, origin: "MANUAL", label: label || wallet.label } : wallet));
+      const updated = { ...existing, origin, label: label || existing.label, enabled: true };
+      setWallets(current => current.map(wallet => wallet.address === address ? updated : wallet));
+      void saveTrackedWallet(updated, "PATCH").catch(saveError => setError(saveError instanceof Error ? saveError.message : "ウォレットのDB保存に失敗しました"));
       return null;
     }
-    setWallets(current => [...current, { address, label: label || `手動 ${manualCount + 1}`, origin: "MANUAL", enabled: true, addedAt: new Date().toISOString() }]);
+    const wallet: TrackedWallet = {
+      network: "SOLANA",
+      address,
+      label: label || `手動 ${manualCount + 1}`,
+      origin,
+      enabled: true,
+      addedAt: new Date().toISOString(),
+    };
+    setWallets(current => [...current, wallet]);
+    void saveTrackedWallet(wallet).then(saved => {
+      setWallets(current => current.map(item => item.address === saved.address && (item.network ?? "SOLANA") === (saved.network ?? "SOLANA") ? { ...item, ...saved } : item));
+    }).catch(saveError => setError(saveError instanceof Error ? saveError.message : "ウォレットのDB保存に失敗しました"));
     return null;
   };
 
@@ -1355,7 +1440,7 @@ export function TradingApp() {
         return current;
       }
       setError(null);
-      return [...current, {
+      const candidate: TrackedWallet = {
         network,
         address: score.address,
         label: `${network === "SOLANA" ? "SOL" : network === "ETHEREUM" ? "ETH" : "BASE"} 採用候補 #${rank}`,
@@ -1363,8 +1448,31 @@ export function TradingApp() {
         enabled: false,
         addedAt: new Date().toISOString(),
         score,
-      }];
+      };
+      void saveTrackedWallet(candidate).catch(saveError => setError(saveError instanceof Error ? saveError.message : "採用候補のDB保存に失敗しました"));
+      return [...current, candidate];
     });
+  };
+
+  const removeWallet = (target: TrackedWallet) => {
+    setWallets(current => current.filter(wallet => !((wallet.network ?? "SOLANA") === (target.network ?? "SOLANA") && wallet.address.toLowerCase() === target.address.toLowerCase())));
+    void deleteTrackedWallet(target).catch(deleteError => {
+      setWallets(current => current.some(wallet => (wallet.network ?? "SOLANA") === (target.network ?? "SOLANA") && wallet.address.toLowerCase() === target.address.toLowerCase()) ? current : [...current, target]);
+      setError(deleteError instanceof Error ? deleteError.message : "ウォレット削除のDB反映に失敗しました");
+    });
+  };
+
+  const toggleWallet = (target: TrackedWallet, enabled: boolean) => {
+    const updated = { ...target, enabled };
+    setWallets(current => current.map(wallet => (wallet.network ?? "SOLANA") === (target.network ?? "SOLANA") && wallet.address.toLowerCase() === target.address.toLowerCase() ? updated : wallet));
+    void saveTrackedWallet(updated, "PATCH").catch(saveError => setError(saveError instanceof Error ? saveError.message : "コピー設定のDB保存に失敗しました"));
+  };
+
+  const stopAllWallets = () => {
+    const enabledWallets = wallets.filter(wallet => wallet.enabled);
+    setWallets(current => current.map(wallet => ({ ...wallet, enabled: false })));
+    void Promise.all(enabledWallets.map(wallet => saveTrackedWallet({ ...wallet, enabled: false }, "PATCH")))
+      .catch(saveError => setError(saveError instanceof Error ? saveError.message : "一括停止のDB保存に失敗しました"));
   };
 
   const addFavorite = async (mint: string) => {
@@ -1388,7 +1496,7 @@ export function TradingApp() {
   const currentTitle = useMemo(() => nav.find(item => item.id === view)?.label ?? "", [view]);
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen w-full max-w-full overflow-x-hidden">
       <aside className={`fixed inset-y-0 left-0 z-40 w-64 border-r border-white/[0.07] bg-[#090d0f]/95 backdrop-blur-xl transition-transform lg:translate-x-0 ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>
         <div className="flex h-16 items-center border-b border-white/[0.07] px-5">
           <img src="/next-trade-icon.png" alt="NEXT-TRADE" className="mr-3 h-10 w-10 rounded-xl object-contain" />
@@ -1414,7 +1522,7 @@ export function TradingApp() {
         </div>
       </aside>
       {mobileOpen && <button aria-label="メニューを閉じる" onClick={() => setMobileOpen(false)} className="fixed inset-0 z-30 bg-black/70 lg:hidden" />}
-      <div className="lg:pl-64">
+      <div className="w-full min-w-0 max-w-full lg:pl-64">
         <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-white/[0.07] bg-[#080c0e]/85 px-4 backdrop-blur-xl md:px-6">
           <div className="flex items-center gap-3">
             <button onClick={() => setMobileOpen(true)} className="rounded-lg border border-white/10 p-2 lg:hidden"><Menu size={17} /></button>
@@ -1432,7 +1540,7 @@ export function TradingApp() {
             <WalletMultiButton />
           </div>
         </header>
-        <main className="mx-auto max-w-[1500px] p-4 md:p-6">
+        <main className="mx-auto w-full min-w-0 max-w-[1500px] overflow-x-hidden p-4 md:p-6">
           {error && <div className="mb-4 flex items-start gap-3 rounded-xl border border-rose-400/20 bg-rose-400/[0.07] p-4 text-sm text-rose-200"><X size={17} className="mt-0.5 shrink-0" /><span className="min-w-0 flex-1 whitespace-pre-wrap break-all leading-relaxed">{error}</span><button onClick={() => setError(null)} className="text-xs">閉じる</button></div>}
           <div className="mb-4 flex flex-wrap gap-2 text-[11px]">
             <Badge tone="green"><ShieldCheck size={12} className="mr-1" />実ウォレットデータのみ</Badge>
@@ -1440,7 +1548,7 @@ export function TradingApp() {
             <Badge tone="gray">手動10件 + 自動5件</Badge>
           </div>
           {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} onClose={closePosition} />}
-          {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={target => setWallets(current => current.filter(wallet => !((wallet.network ?? "SOLANA") === (target.network ?? "SOLANA") && wallet.address.toLowerCase() === target.address.toLowerCase())))} onToggle={(target, enabled) => setWallets(current => current.map(wallet => (wallet.network ?? "SOLANA") === (target.network ?? "SOLANA") && wallet.address.toLowerCase() === target.address.toLowerCase() ? { ...wallet, enabled } : wallet))} onStopAll={() => setWallets(current => current.map(wallet => ({ ...wallet, enabled: false })))} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
+          {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={removeWallet} onToggle={toggleWallet} onStopAll={stopAllWallets} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
           {view === "scanner" && <Scanner network={scanNetwork} onNetworkChange={setScanNetwork} result={scanResult} scanState={scanState} scanning={scanState?.status === "RUNNING"} wallets={wallets} autoCount={wallets.filter(wallet => wallet.origin === "AUTO" && (wallet.network ?? "SOLANA") === scanNetwork).length} onScan={scan} onAddCandidate={addScanCandidate} />}
           {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} />}
           {view === "activity" && <MobileActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}

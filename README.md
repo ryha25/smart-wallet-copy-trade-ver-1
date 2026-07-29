@@ -1,5 +1,26 @@
 # NEXT-TRADE — Smart Wallet Copy Trade MVP
 
+## コピー監視のDB永続化
+
+手動登録・自動採用・お気に入りコイン経由のウォレットは、すべて`tracked_wallets`へ保存されます。
+登録経路では絞り込まず、Solanaかつ`is_copy_enabled = true`のウォレットを同じサーバー監視へ流します。
+標準の確認間隔は15秒で、必要な場合のみ次の環境変数で変更できます。
+
+```env
+COPY_MONITOR_INTERVAL_SECONDS="15"
+```
+
+新規BUY検知後はコピー条件とトークン危険判定を行い、`paper_positions`または
+`skipped_trades`へ保存します。監視対象数、登録経路別件数、copyEnabled、最終署名、
+BUY検知数、コピー結果、見送り理由はサーバーログへ一時出力されます。
+
+この更新をデプロイする前に、次を実行してください。
+
+```bash
+npx prisma generate
+npx prisma migrate deploy
+```
+
 ## Ethereum / Base 実データスキャン
 
 Solanaに加えて、EthereumとBaseの優秀ウォレットランキングを実データだけで作成できます。

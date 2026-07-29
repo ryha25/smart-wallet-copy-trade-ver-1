@@ -122,13 +122,29 @@ export type TokenRiskCheck = {
 };
 
 export type TrackedWallet = {
+  id?: string;
   network?: ChainNetwork;
   address: string;
   label: string;
-  origin: "MANUAL" | "AUTO";
+  origin: "MANUAL" | "AUTO" | "FAVORITE";
   enabled: boolean;
   addedAt: string;
+  lastObservedSignature?: string | null;
+  lastCheckedAt?: string | null;
   score?: WalletScore;
+};
+
+export type CopyMonitorStatus = {
+  running: boolean;
+  lastCycleAt: string | null;
+  monitoredWallets: number;
+  manualWallets: number;
+  autoWallets: number;
+  favoriteWallets: number;
+  newBuyCount: number;
+  createdPositions: number;
+  skippedTrades: number;
+  lastError: string | null;
 };
 
 export type ChainNetwork = "SOLANA" | "ETHEREUM" | "BASE";

@@ -88,11 +88,11 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
           <div className="mb-6 flex items-center gap-2 text-sm font-semibold text-white"><LockKeyhole size={17} className="text-[#38e7ae]" />ログイン</div>
           <label className="mb-4 block">
             <span className="mb-2 block text-xs text-[#8b9ca2]">ユーザー名</span>
-            <input value={username} onChange={event => setUsername(event.target.value)} autoComplete="username" required className="w-full rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none focus:border-[#38e7ae]/60" />
+            <input value={username} onChange={event => setUsername(event.target.value)} autoComplete="username" required className="w-full rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-base text-white outline-none focus:border-[#38e7ae]/60" />
           </label>
           <label className="mb-5 block">
             <span className="mb-2 block text-xs text-[#8b9ca2]">6文字のパスコード</span>
-            <input type="password" value={passcode} onChange={event => setPasscode(event.target.value)} autoComplete="current-password" minLength={6} maxLength={6} required inputMode="numeric" className="w-full rounded-xl border border-white/10 bg-black/20 px-4 py-3 tracking-[.35em] text-white outline-none focus:border-[#38e7ae]/60" />
+            <input type="password" value={passcode} onChange={event => setPasscode(event.target.value)} autoComplete="current-password" minLength={6} maxLength={6} required inputMode="numeric" className="w-full rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-base tracking-[.35em] text-white outline-none focus:border-[#38e7ae]/60" />
           </label>
           {auth.configurationError && <p className="mb-4 whitespace-pre-wrap rounded-xl border border-amber-400/20 bg-amber-400/10 p-3 text-xs text-amber-200">{auth.configurationError}</p>}
           {error && <p className="mb-4 whitespace-pre-wrap rounded-xl border border-rose-400/20 bg-rose-400/10 p-3 text-xs text-rose-200">{error}</p>}
