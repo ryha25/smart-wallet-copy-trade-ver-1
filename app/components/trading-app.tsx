@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { defaultSettings } from "../lib/default-settings";
+import { COPY_SOURCE_WALLET_LIMIT } from "../lib/limits";
 import { calculatePaperPnl, evaluateCopySignal } from "../lib/paper-trading";
 import type {
   ChainNetwork,
@@ -32,7 +33,7 @@ import type {
   WalletScanState,
   WalletScore,
 } from "../lib/live-types";
-import type { CopySettings, LiveTradingStatus } from "../lib/types";
+import type { CopySettings, LiveTradingStatus, TradeModeFilter } from "../lib/types";
 
 type View = "dashboard" | "sources" | "scanner" | "favorites" | "activity" | "settings";
 type ActivityByWallet = Record<string, LiveWalletResponse>;
@@ -46,6 +47,9 @@ const STORAGE = {
   settings: "swt-v2-settings",
   processed: "swt-v2-processed",
   favorites: "swt-v2-favorites",
+  performanceMode: "next-trade-performance-mode",
+  historyMode: "next-trade-history-mode",
+  valueDisplay: "next-trade-value-display",
 };
 
 type ApiErrorResponse = { error?: string; details?: string; stack?: string };
@@ -100,6 +104,14 @@ const money = (value: number, signed = false) =>
 
 const pct = (value: number) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 const shortAddress = (address: string) => `${address.slice(0, 5)}…${address.slice(-5)}`;
+const compactMoney = (value?: number) => {
+  if (value == null || !Number.isFinite(value) || value <= 0) return "取得不可";
+  return `$${Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(value)}`;
+};
+const tokenPrice = (value?: number) =>
+  value == null || !Number.isFinite(value) || value <= 0
+    ? "取得不可"
+    : `$${value.toLocaleString("en-US", { maximumSignificantDigits: 8 })}`;
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <section className={`min-w-0 max-w-full rounded-2xl border border-white/[0.07] bg-[#101619] ${className}`}>{children}</section>;
@@ -252,13 +264,40 @@ function Dashboard({
   liveStatus: LiveTradingStatus | null;
   onClose: (position: LivePaperPosition, reason: string) => void;
 }) {
-  const open = positions.filter(position => position.status === "OPEN");
-  const closed = positions.filter(position => position.status === "CLOSED" && position.exitPriceUsd);
+  const [performanceMode, setPerformanceMode] = useState<"LIVE" | "PAPER">("LIVE");
+  const [valueDisplay, setValueDisplay] = useState<"PRICE" | "MC">("PRICE");
+  useEffect(() => {
+    const savedMode = localStorage.getItem(STORAGE.performanceMode);
+    const savedDisplay = localStorage.getItem(STORAGE.valueDisplay);
+    if (savedMode === "LIVE" || savedMode === "PAPER") setPerformanceMode(savedMode);
+    if (savedDisplay === "PRICE" || savedDisplay === "MC") setValueDisplay(savedDisplay);
+  }, []);
+  const selectPerformanceMode = (mode: "LIVE" | "PAPER") => {
+    setPerformanceMode(mode);
+    localStorage.setItem(STORAGE.performanceMode, mode);
+  };
+  const selectValueDisplay = (mode: "PRICE" | "MC") => {
+    setValueDisplay(mode);
+    localStorage.setItem(STORAGE.valueDisplay, mode);
+  };
+  const scoped = positions.filter(position => (position.executionMode ?? "PAPER") === performanceMode);
+  const open = scoped.filter(position => position.status === "OPEN");
+  const closed = scoped.filter(position => position.status === "CLOSED" && position.exitPriceUsd);
   const realized = closed.reduce((sum, position) =>
-    sum + calculatePaperPnl(position.copyPriceUsd, position.exitPriceUsd ?? position.copyPriceUsd, position.amountUsd).pnlUsd, 0);
+    sum + (position.realizedPnlUsd ?? calculatePaperPnl(position.copyPriceUsd, position.exitPriceUsd ?? position.copyPriceUsd, position.amountUsd).pnlUsd), 0);
   const unrealized = open.reduce((sum, position) =>
     sum + calculatePaperPnl(position.copyPriceUsd, position.currentPriceUsd, position.amountUsd).pnlUsd, 0);
-  const wins = closed.filter(position => (position.exitPriceUsd ?? 0) > position.copyPriceUsd).length;
+  const wins = closed.filter(position =>
+    (position.realizedPnlUsd ?? calculatePaperPnl(position.copyPriceUsd, position.exitPriceUsd ?? position.copyPriceUsd, position.amountUsd).pnlUsd) > 0,
+  ).length;
+  const closedPnls = closed.map(position =>
+    position.realizedPnlUsd ?? calculatePaperPnl(position.copyPriceUsd, position.exitPriceUsd ?? position.copyPriceUsd, position.amountUsd).pnlUsd);
+  const winPnls = closedPnls.filter(value => value > 0);
+  const lossPnls = closedPnls.filter(value => value < 0);
+  const todayTokyo = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }).format(new Date());
+  const todayPnl = closed
+    .filter(position => position.closedAt && new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }).format(new Date(position.closedAt)) === todayTokyo)
+    .reduce((sum, position) => sum + (position.realizedPnlUsd ?? calculatePaperPnl(position.copyPriceUsd, position.exitPriceUsd ?? position.copyPriceUsd, position.amountUsd).pnlUsd), 0);
   const recentEvents = Object.values(activities)
     .flatMap(activity => activity.events.map(event => ({ ...event, wallet: activity.address })))
     .sort((a, b) => b.blockTime - a.blockTime)
@@ -273,11 +312,28 @@ function Dashboard({
         </div>
         <Badge tone={lastRefresh ? "green" : "gray"}>{lastRefresh ? `最終更新 ${new Date(lastRefresh).toLocaleTimeString("ja-JP")}` : "未取得"}</Badge>
       </div>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex rounded-xl border border-white/10 bg-[#0a0f11] p-1">
+          {(["LIVE", "PAPER"] as const).map(mode => (
+            <button key={mode} type="button" onClick={() => selectPerformanceMode(mode)} className={`rounded-lg px-4 py-2 text-xs font-semibold ${performanceMode === mode ? mode === "LIVE" ? "bg-rose-500/20 text-rose-200" : "bg-[#38e7ae]/15 text-[#38e7ae]" : "text-[#718188]"}`}>{mode}</button>
+          ))}
+        </div>
+        <div className="flex rounded-xl border border-white/10 bg-[#0a0f11] p-1">
+          <button type="button" onClick={() => selectValueDisplay("PRICE")} className={`rounded-lg px-3 py-2 text-xs ${valueDisplay === "PRICE" ? "bg-white/10 text-white" : "text-[#718188]"}`}>価格</button>
+          <button type="button" onClick={() => selectValueDisplay("MC")} className={`rounded-lg px-3 py-2 text-xs ${valueDisplay === "MC" ? "bg-white/10 text-white" : "text-[#718188]"}`}>MC</button>
+        </div>
+      </div>
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <Metric label="監視中コピー元" value={`${wallets.filter(wallet => wallet.enabled).length} / 15`} detail={`手動・お気に入り ${wallets.filter(w => w.origin !== "AUTO").length}/10・自動 ${wallets.filter(w => w.origin === "AUTO").length}/5`} />
-        <Metric label={liveMode ? "取引ウォレット残高" : "ペーパートレード残高"} value={liveMode ? (liveStatus?.usdcBalance == null ? "—" : `${liveStatus.usdcBalance.toFixed(2)} USDC`) : money(INITIAL_PAPER_BALANCE + realized + unrealized)} detail={liveMode ? "専用ウォレットの実残高" : "開始残高 $10,000（仮想資金）"} accent />
-        <Metric label="確定損益" value={money(realized, true)} detail={`${closed.length}件決済`} accent={realized >= 0} />
-        <Metric label="勝率" value={closed.length ? `${(wins / closed.length * 100).toFixed(1)}%` : "—"} detail="決済済みペーパートレードのみ" />
+        <Metric label="コピー元ウォレット" value={`${wallets.length} / ${COPY_SOURCE_WALLET_LIMIT}`} detail={`コピーON ${wallets.filter(wallet => wallet.enabled).length}件`} />
+        <Metric label={performanceMode === "LIVE" ? "取引ウォレット残高" : "ペーパートレード残高"} value={performanceMode === "LIVE" ? (liveStatus?.usdcBalance == null ? "—" : `${liveStatus.usdcBalance.toFixed(2)} USDC`) : money(INITIAL_PAPER_BALANCE + realized + unrealized)} detail={performanceMode === "LIVE" ? "専用ウォレットの実残高" : "開始残高 $10,000（仮想資金）"} accent />
+        <Metric label={`${performanceMode} 確定損益`} value={money(realized, true)} detail={`${closed.length}件決済`} accent={realized >= 0} />
+        <Metric label={`${performanceMode} 勝率`} value={closed.length ? `${(wins / closed.length * 100).toFixed(1)}%` : "—"} detail={`勝ち${wins}・負け${closed.length - wins}`} />
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <Metric label={`${performanceMode} 本日の損益`} value={money(todayPnl, true)} detail="日本時間0:00から" accent={todayPnl >= 0} />
+        <Metric label="平均利益 / 平均損失" value={`${money(winPnls.length ? winPnls.reduce((a, b) => a + b, 0) / winPnls.length : 0, true)} / ${money(lossPnls.length ? lossPnls.reduce((a, b) => a + b, 0) / lossPnls.length : 0, true)}`} detail="決済済みのみ" />
+        <Metric label="最大利益" value={money(winPnls.length ? Math.max(...winPnls) : 0, true)} detail={performanceMode} accent />
+        <Metric label="最大損失" value={money(lossPnls.length ? Math.min(...lossPnls) : 0, true)} detail={performanceMode} />
       </div>
       <div className="mt-3 grid gap-3 xl:grid-cols-[1fr_1.25fr]">
         <Card>
@@ -292,6 +348,7 @@ function Dashboard({
                     <div className="min-w-0 flex-1">
                       <p className="font-semibold">{position.symbol}</p>
                       <p className="truncate font-mono text-[10px] text-[#66767c]">{shortAddress(position.wallet)}・{position.executionMode === "LIVE" ? "LIVE" : "PAPER"}</p>
+                      <p className="mt-1 text-[10px] text-[#718188]">{valueDisplay === "PRICE" ? `購入 ${tokenPrice(position.copyPriceUsd)} / 現在 ${tokenPrice(position.currentPriceUsd)}` : `購入時MC ${compactMoney(position.entryMarketCapUsd)} / 現在MC ${compactMoney(position.currentMarketCapUsd)}`}</p>
                     </div>
                     <div className="flex shrink-0 flex-col items-end">
                       <div className={`text-right tabular-nums ${pnl.pnlUsd >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>
@@ -322,15 +379,15 @@ function Dashboard({
           {recentEvents.length ? (
             <div className="overflow-x-auto">
               <table className="w-full min-w-[620px] text-left text-xs">
-                <thead className="text-[#66767c]"><tr>{["時刻", "売買", "コイン", "コピー元", "取引価格", "現在価格"].map(item => <th key={item} className="px-4 py-3 font-medium">{item}</th>)}</tr></thead>
+                <thead className="text-[#66767c]"><tr>{["時刻", "売買", "コイン", "コピー元", valueDisplay === "PRICE" ? "取引価格" : "取引時MC", valueDisplay === "PRICE" ? "現在価格" : "現在MC"].map(item => <th key={item} className="px-4 py-3 font-medium">{item}</th>)}</tr></thead>
                 <tbody>{recentEvents.map(event => (
                   <tr key={`${event.signature}-${event.mint}`} className="border-t border-white/[0.07]">
                     <td className="px-4 py-3">{event.blockTime ? new Date(event.blockTime * 1000).toLocaleString("ja-JP") : "—"}</td>
                     <td className="px-4 py-3"><Badge tone={event.side === "BUY" ? "green" : "red"}>{event.side === "BUY" ? "購入" : "売却"}</Badge></td>
                     <td className="px-4 py-3 font-semibold">{event.current?.symbol ?? shortAddress(event.mint)}</td>
                     <td className="px-4 py-3 font-mono">{shortAddress(event.wallet)}</td>
-                    <td className="px-4 py-3 tabular-nums">{event.sourcePriceUsd ? `$${event.sourcePriceUsd.toPrecision(5)}` : "算定不可"}</td>
-                    <td className="px-4 py-3 tabular-nums">{event.current ? `$${event.current.priceUsd.toPrecision(5)}` : "取得不可"}</td>
+                    <td className="px-4 py-3 tabular-nums">{valueDisplay === "PRICE" ? (event.sourcePriceUsd ? tokenPrice(event.sourcePriceUsd) : "算定不可") : "取得不可"}</td>
+                    <td className="px-4 py-3 tabular-nums">{valueDisplay === "PRICE" ? tokenPrice(event.current?.priceUsd) : compactMoney(event.current?.marketCapUsd)}</td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -367,8 +424,6 @@ function Sources({
   const [address, setAddress] = useState("");
   const [label, setLabel] = useState("");
   const [message, setMessage] = useState<string | null>(null);
-  const manualCount = wallets.filter(wallet => wallet.origin !== "AUTO").length;
-  const autoCount = wallets.filter(wallet => wallet.origin === "AUTO").length;
   const enabledCount = wallets.filter(wallet => wallet.enabled).length;
   const submit = () => {
     const error = onAdd(address.trim(), label.trim());
@@ -404,13 +459,13 @@ function Sources({
       <div className="grid gap-3 lg:grid-cols-[360px_1fr]">
         <Card className="h-fit p-5">
           <div className="mb-5 flex items-center justify-between">
-            <div><p className="text-sm font-semibold">手動登録</p><p className="mt-1 text-xs text-[#718188]">最大10件</p></div>
-            <Badge tone={manualCount >= 10 ? "amber" : "green"}>{manualCount} / 10</Badge>
+            <div><p className="text-sm font-semibold">コピー元を登録</p><p className="mt-1 text-xs text-[#718188]">登録経路共通の上限</p></div>
+            <Badge tone={wallets.length >= COPY_SOURCE_WALLET_LIMIT ? "amber" : "green"}>{wallets.length} / {COPY_SOURCE_WALLET_LIMIT}</Badge>
           </div>
           <div className="space-y-4">
             <Field label="表示名（任意）" value={label} onChange={value => setLabel(String(value))} placeholder="例：確認済みウォレット" />
             <Field label="Solanaウォレットアドレス" value={address} onChange={value => setAddress(String(value))} placeholder="32〜44文字の公開アドレス" />
-            <button onClick={submit} disabled={manualCount >= 10} className="w-full rounded-xl bg-[#38e7ae] px-4 py-3 text-sm font-semibold text-[#06110d] disabled:cursor-not-allowed disabled:opacity-40">コピー元に登録</button>
+            <button onClick={submit} disabled={wallets.length >= COPY_SOURCE_WALLET_LIMIT} className="w-full rounded-xl bg-[#38e7ae] px-4 py-3 text-sm font-semibold text-[#06110d] disabled:cursor-not-allowed disabled:opacity-40">コピー元に登録</button>
             {message && <p className={`text-xs leading-5 ${message.includes("登録しました") ? "text-emerald-300" : "text-amber-300"}`}>{message}</p>}
           </div>
           <div className="mt-5 rounded-xl border border-amber-400/15 bg-amber-400/[0.06] p-3 text-xs leading-5 text-amber-200/80">
@@ -418,7 +473,7 @@ function Sources({
           </div>
         </Card>
         <Card>
-          <SectionHeader title="監視対象" note={`手動 ${manualCount}/10・採用候補 ${autoCount}/5・15秒間隔で実取引を確認`} />
+          <SectionHeader title="監視対象" note={`コピー元ウォレット ${wallets.length}/${COPY_SOURCE_WALLET_LIMIT}・登録経路に関係なくコピーONを監視`} />
           {wallets.length ? (
             <div className="divide-y divide-white/[0.07]">
               {wallets.map(wallet => {
@@ -565,7 +620,7 @@ function Scanner({
             accent={Boolean(ethereumPrice)}
           />
         )}
-        <Metric label="採用候補枠" value={`${autoCount} / 5`} detail="追加時はコピーOFF" />
+        <Metric label="コピー元ウォレット" value={`${wallets.length} / ${COPY_SOURCE_WALLET_LIMIT}`} detail="候補追加時はコピーOFF" />
         <Metric label="重複除外後の発見数" value={String(scanState?.discoveredCandidates || result?.discoveredCandidates || "—")} detail="複数DEX横断" />
         <Metric label="今回の解析数" value={scanState?.targetCandidates ? `${scanState.analyzedCandidates} / ${scanState.targetCandidates}` : result ? String(result.scannedCandidates) : "—"} detail={scanState ? `解析成功 ${scanState.successfulAnalyses}件` : result ? `解析成功 ${result.successfulAnalyses}件` : "架空データでの補充なし"} />
         <Metric label="追加可能な上位候補" value={result ? String(addableTopFive) : "—"} detail="選択中ソートの上位5件" accent={addableTopFive > 0} />
@@ -635,7 +690,7 @@ function Scanner({
               const warnings = wallet.warnings ?? (blockers.length ? [] : wallet.reasons ?? []);
               const alreadyAdded = wallets.some(item => (item.network ?? "SOLANA") === network && item.address.toLowerCase() === wallet.address.toLowerCase());
               const topFive = index < 5;
-              const canAdd = topFive && wallet.addable !== false && blockers.length === 0 && !alreadyAdded && autoCount < 5;
+              const canAdd = topFive && wallet.addable !== false && blockers.length === 0 && !alreadyAdded && wallets.length < COPY_SOURCE_WALLET_LIMIT;
               return (
               <div key={wallet.address} className="p-5">
                 <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -660,7 +715,7 @@ function Scanner({
                         onClick={() => onAddCandidate(wallet, index + 1)}
                         className="rounded-lg border border-[#38e7ae]/30 bg-[#38e7ae]/10 px-3 py-2 text-xs font-semibold text-[#38e7ae] disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-[#68777c]"
                       >
-                        {alreadyAdded ? "追加済み" : autoCount >= 5 ? "候補枠上限" : blockers.length ? "追加不可" : "採用候補に追加"}
+                        {alreadyAdded ? "追加済み" : wallets.length >= COPY_SOURCE_WALLET_LIMIT ? "コピー元上限" : blockers.length ? "追加不可" : "採用候補に追加"}
                       </button>
                     )}
                   </div>
@@ -873,7 +928,7 @@ function ActivityView({
           <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] text-left text-xs">
               <thead className="text-[#66767c]"><tr>{["状態", "コイン", "コピー元", "検知遅延", "コピー価格", "現在/決済価格", "仮想額", "損益", "理由"].map(item => <th key={item} className="px-4 py-3 font-medium">{item}</th>)}</tr></thead>
-              <tbody>{[...positions].reverse().map(position => {
+              <tbody>{[...positions].sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt)).map(position => {
                 const price = position.status === "CLOSED" ? position.exitPriceUsd ?? position.currentPriceUsd : position.currentPriceUsd;
                 const result = calculatePaperPnl(position.copyPriceUsd, price, position.amountUsd);
                 return (
@@ -918,7 +973,7 @@ function ActivityView({
       <Card className="mt-3">
         <SectionHeader title="見送り履歴" note="条件に合わずコピーしなかった実シグナルも保存" />
         {skipped.length ? (
-          <div className="divide-y divide-white/[0.07]">{[...skipped].reverse().map(item => (
+          <div className="divide-y divide-white/[0.07]">{[...skipped].sort((a, b) => Date.parse(b.detectedAt) - Date.parse(a.detectedAt)).map(item => (
             <div key={item.id} className="flex flex-wrap items-center gap-3 px-5 py-4 text-xs">
               <Badge tone="amber">見送り</Badge><span className="font-semibold">{item.symbol}</span><span className="font-mono text-[#718188]">{shortAddress(item.wallet)}</span><span className="ml-auto text-[#a4b0b4]">{item.reason}</span>
             </div>
@@ -1001,6 +1056,26 @@ function MobileActivityView({
     skipped: false,
     recent: false,
   });
+  const [historyMode, setHistoryMode] = useState<TradeModeFilter>("LIVE");
+  const [valueDisplay, setValueDisplay] = useState<"PRICE" | "MC">("PRICE");
+  useEffect(() => {
+    const savedMode = localStorage.getItem(STORAGE.historyMode);
+    const savedDisplay = localStorage.getItem(STORAGE.valueDisplay);
+    if (savedMode === "ALL" || savedMode === "LIVE" || savedMode === "PAPER") setHistoryMode(savedMode);
+    if (savedDisplay === "PRICE" || savedDisplay === "MC") setValueDisplay(savedDisplay);
+  }, []);
+  const selectHistoryMode = (mode: TradeModeFilter) => {
+    setHistoryMode(mode);
+    localStorage.setItem(STORAGE.historyMode, mode);
+  };
+  const selectValueDisplay = (mode: "PRICE" | "MC") => {
+    setValueDisplay(mode);
+    localStorage.setItem(STORAGE.valueDisplay, mode);
+  };
+  const filteredPositions = positions.filter(position =>
+    historyMode === "ALL" || (position.executionMode ?? "PAPER") === historyMode);
+  const filteredSkipped = skipped.filter(item =>
+    historyMode === "ALL" || item.executionMode === historyMode);
   const sourceCount = Object.values(activities).reduce((sum, activity) => sum + activity.events.length, 0);
   const needsEvents = openPanels.source || openPanels.recent;
   const events = useMemo(() => needsEvents
@@ -1018,7 +1093,7 @@ function MobileActivityView({
         <p className="truncate font-semibold text-white">{event.current?.symbol ?? shortAddress(event.mint)}</p>
         <p className="mt-1 truncate font-mono text-[10px] text-[#718188]">{shortAddress(event.wallet)}・{new Date(event.blockTime * 1000).toLocaleString("ja-JP")}</p>
       </div>
-      <p className="shrink-0 text-right tabular-nums text-[#b8c3c7]">{event.sourcePriceUsd ? `$${event.sourcePriceUsd.toPrecision(5)}` : "算定不可"}</p>
+      <p className="shrink-0 text-right tabular-nums text-[#b8c3c7]">{valueDisplay === "PRICE" ? (event.sourcePriceUsd ? tokenPrice(event.sourcePriceUsd) : "算定不可") : "取得不可"}</p>
     </div>
   );
 
@@ -1028,20 +1103,30 @@ function MobileActivityView({
         <h1 className="text-xl font-semibold">実取引・ペーパー履歴</h1>
         <p className="mt-1 text-sm text-[#7f9097]">項目をタップした時だけ一覧を描画します。初期状態はすべて閉じています。</p>
       </div>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex rounded-xl border border-white/10 bg-[#0a0f11] p-1">
+          {(["ALL", "LIVE", "PAPER"] as const).map(mode => <button key={mode} type="button" onClick={() => selectHistoryMode(mode)} className={`rounded-lg px-3 py-2 text-xs ${historyMode === mode ? "bg-white/10 text-white" : "text-[#718188]"}`}>{mode === "ALL" ? "すべて" : mode}</button>)}
+        </div>
+        <div className="flex rounded-xl border border-white/10 bg-[#0a0f11] p-1">
+          <button type="button" onClick={() => selectValueDisplay("PRICE")} className={`rounded-lg px-3 py-2 text-xs ${valueDisplay === "PRICE" ? "bg-white/10 text-white" : "text-[#718188]"}`}>価格</button>
+          <button type="button" onClick={() => selectValueDisplay("MC")} className={`rounded-lg px-3 py-2 text-xs ${valueDisplay === "MC" ? "bg-white/10 text-white" : "text-[#718188]"}`}>MC</button>
+        </div>
+      </div>
       <HistoryAccordion
-        title="ペーパートレード"
-        count={positions.length}
-        note="仮想資金によるコピー結果"
+        title="コピー取引・決済履歴"
+        count={filteredPositions.length}
+        note={`${historyMode}モード・新しい順`}
         open={openPanels.paper}
         onToggle={() => toggle("paper")}
-        renderContent={() => positions.length ? (
-          <div className="divide-y divide-white/[0.07]">{[...positions].reverse().map(position => {
+        renderContent={() => filteredPositions.length ? (
+          <div className="divide-y divide-white/[0.07]">{[...filteredPositions].sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt)).map(position => {
             const price = position.status === "CLOSED" ? position.exitPriceUsd ?? position.currentPriceUsd : position.currentPriceUsd;
             const result = calculatePaperPnl(position.copyPriceUsd, price, position.amountUsd);
             return (
               <div key={position.id} className="px-4 py-4 text-xs sm:px-5">
                 <div className="flex items-center gap-2"><Badge tone={position.status === "OPEN" ? "green" : "gray"}>{position.status === "OPEN" ? "保有中" : "決済済み"}</Badge><Badge tone={position.executionMode === "LIVE" ? "red" : "gray"}>{position.executionMode === "LIVE" ? "LIVE" : "PAPER"}</Badge><span className="font-semibold">{position.symbol}</span><span className="ml-auto font-mono text-[#718188]">{shortAddress(position.wallet)}</span></div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-[#87969b]"><span>仮想額 {money(position.amountUsd)}</span><span className={result.pnlUsd >= 0 ? "text-[#38e7ae]" : "text-rose-300"}>損益 {money(result.pnlUsd, true)} / {pct(result.pnlPct)}</span></div>
+                <p className="mt-2 text-[#718188]">{valueDisplay === "PRICE" ? `購入 ${tokenPrice(position.copyPriceUsd)} / ${position.status === "CLOSED" ? "売却" : "現在"} ${tokenPrice(price)}` : `購入時MC ${compactMoney(position.entryMarketCapUsd)} / ${position.status === "CLOSED" ? "売却時MC" : "現在MC"} ${compactMoney(position.status === "CLOSED" ? position.exitMarketCapUsd : position.currentMarketCapUsd)}`}</p>
                 <div className="mt-3 flex justify-end">{position.status === "OPEN" ? <button onClick={() => onClose(position, "手動決済")} className="text-rose-300">手動決済</button> : <span className="text-[#718188]">{position.exitReason}</span>}</div>
               </div>
             );
@@ -1058,14 +1143,14 @@ function MobileActivityView({
       />
       <HistoryAccordion
         title="見送り履歴"
-        count={skipped.length}
+        count={filteredSkipped.length}
         note="条件に合わずコピーしなかった実シグナル"
         open={openPanels.skipped}
         onToggle={() => toggle("skipped")}
-        renderContent={() => skipped.length ? (
-          <div className="divide-y divide-white/[0.07]">{[...skipped].reverse().map(item => (
+        renderContent={() => filteredSkipped.length ? (
+          <div className="divide-y divide-white/[0.07]">{[...filteredSkipped].sort((a, b) => Date.parse(b.detectedAt) - Date.parse(a.detectedAt)).map(item => (
             <div key={item.id} className="px-4 py-4 text-xs sm:px-5">
-              <div className="flex items-center gap-2"><Badge tone="amber">見送り</Badge><span className="font-semibold">{item.symbol}</span><span className="ml-auto font-mono text-[#718188]">{shortAddress(item.wallet)}</span></div>
+              <div className="flex items-center gap-2"><Badge tone="amber">見送り</Badge><Badge tone={item.executionMode === "LIVE" ? "red" : "gray"}>{item.executionMode ?? "UNKNOWN"}</Badge><span className="font-semibold">{item.symbol}</span><span className="ml-auto font-mono text-[#718188]">{shortAddress(item.wallet)}</span></div>
               <p className="mt-2 text-[#a4b0b4]">{item.reason}</p>
             </div>
           ))}</div>
@@ -1086,10 +1171,12 @@ function MobileActivityView({
 function SettingsView({
   settings,
   liveStatus,
+  dailyLoss,
   onChange,
 }: {
   settings: CopySettings;
   liveStatus: LiveTradingStatus | null;
+  dailyLoss: { lossUsd: number; nextResetAt: string | null };
   onChange: (settings: CopySettings) => void;
 }) {
   const [confirmation, setConfirmation] = useState("");
@@ -1184,6 +1271,23 @@ function SettingsView({
                 <Field type="number" label={`${field.label}の値`} value={settings[field.valueKey]} suffix="%" onChange={value => update(field.valueKey, Number(value))} />
               </div>
             ))}
+            <div className="rounded-xl border border-rose-400/20 bg-[#0a0f11] p-4">
+              <div className="mb-4 flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-semibold">1日の最大損失額</p>
+                  <p className="mt-1 text-xs text-[#718188]">LIVEの確定損失だけを日本時間0:00から合計し、上限後は新規BUYのみ停止します。</p>
+                </div>
+                <Toggle checked={settings.dailyLossLimitEnabled} onChange={value => update("dailyLossLimitEnabled", value)} label="1日の最大損失額" />
+              </div>
+              <Field type="number" label="損失上限" value={settings.dailyLossLimit} suffix="USDC" onChange={value => update("dailyLossLimit", Number(value))} />
+              <div className="mt-3 rounded-lg bg-rose-400/[0.06] p-3 text-xs">
+                <p className="text-[#9ba9ae]">本日のLIVE確定損失</p>
+                <p className="mt-1 font-semibold text-rose-200">{dailyLoss.lossUsd.toFixed(2)} / {settings.dailyLossLimit.toFixed(2)} USDC</p>
+                {settings.dailyLossLimitEnabled && dailyLoss.lossUsd >= settings.dailyLossLimit && (
+                  <p className="mt-2 leading-5 text-rose-200">本日の損失上限に到達しました。新規コピー購入を停止しています。次回リセット：翌日 0:00（日本時間）</p>
+                )}
+              </div>
+            </div>
           </div>
           <div className="mt-6 flex items-center justify-between rounded-xl border border-white/10 bg-[#0a0f11] p-4">
             <div><p className="text-sm font-semibold">同じコインへの重複購入</p><p className="mt-1 text-xs text-[#718188]">OFFなら既存ポジション保有中は見送ります</p></div>
@@ -1208,6 +1312,7 @@ export function TradingApp() {
   const [skipped, setSkipped] = useState<SkippedPaperTrade[]>([]);
   const [settings, setSettings] = useState<CopySettings>(defaultSettings);
   const [liveStatus, setLiveStatus] = useState<LiveTradingStatus | null>(null);
+  const [dailyLoss, setDailyLoss] = useState<{ lossUsd: number; nextResetAt: string | null }>({ lossUsd: 0, nextResetAt: null });
   const [scanResults, setScanResults] = useState<Partial<Record<ChainNetwork, WalletScanResponse>>>({});
   const [scanStates, setScanStates] = useState<Partial<Record<ChainNetwork, WalletScanState>>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -1293,12 +1398,10 @@ export function TradingApp() {
         setSettings(savedSettings);
         setLiveStatus(tradingStatus);
         setSettingsLoaded(true);
-        const serverTrades = await requestJson<{ positions: LivePaperPosition[]; skipped: SkippedPaperTrade[] }>("/api/live/copy-monitor", 30_000, { method: "PUT" });
-        setPositions(current => serverTrades.positions.length ? serverTrades.positions.map(position => {
-          const existing = current.find(item => item.id === position.id);
-          return existing && position.status === "OPEN" ? { ...position, currentPriceUsd: existing.currentPriceUsd } : position;
-        }) : current);
+        const serverTrades = await requestJson<{ positions: LivePaperPosition[]; skipped: SkippedPaperTrade[]; dailyLoss: { lossUsd: number; nextResetAt: string | null } }>("/api/live/copy-monitor", 30_000, { method: "PUT" });
+        setPositions(current => serverTrades.positions.length ? serverTrades.positions : current);
         setSkipped(current => serverTrades.skipped.length ? serverTrades.skipped : current);
+        setDailyLoss(serverTrades.dailyLoss);
       } catch (syncError) {
         setError(syncError instanceof Error ? syncError.message : "DB保存データの同期に失敗しました");
       }
@@ -1337,12 +1440,10 @@ export function TradingApp() {
 
   const syncServerMonitor = useCallback(async () => {
     await requestJson("/api/live/copy-monitor", 30_000);
-    const payload = await requestJson<{ positions: LivePaperPosition[]; skipped: SkippedPaperTrade[] }>("/api/live/copy-monitor", 30_000, { method: "PUT" });
-    setPositions(current => payload.positions.map(position => {
-      const existing = current.find(item => item.id === position.id);
-      return existing && position.status === "OPEN" ? { ...position, currentPriceUsd: existing.currentPriceUsd } : position;
-    }));
+    const payload = await requestJson<{ positions: LivePaperPosition[]; skipped: SkippedPaperTrade[]; dailyLoss: { lossUsd: number; nextResetAt: string | null } }>("/api/live/copy-monitor", 30_000, { method: "PUT" });
+    setPositions(payload.positions);
     setSkipped(payload.skipped);
+    setDailyLoss(payload.dailyLoss);
   }, []);
 
   useEffect(() => {
@@ -1350,7 +1451,7 @@ export function TradingApp() {
     void syncServerMonitor().catch(syncError => setError(syncError instanceof Error ? syncError.message : "コピー監視状態の取得に失敗しました"));
     const timer = window.setInterval(() => {
       void syncServerMonitor().catch(syncError => setError(syncError instanceof Error ? syncError.message : "コピー監視状態の更新に失敗しました"));
-    }, 15_000);
+    }, 3_000);
     return () => window.clearInterval(timer);
   }, [hydrated, syncServerMonitor]);
 
@@ -1377,10 +1478,10 @@ export function TradingApp() {
       return;
     }
     if (!event.current) {
-      setSkipped(current => [...current, {
+      setSkipped(current => [{
         id: crypto.randomUUID(), signature: event.signature, wallet: wallet.address, mint: event.mint,
         symbol: shortAddress(event.mint), detectedAt: new Date().toISOString(), reason: "現在価格を取得できない",
-      }]);
+      }, ...current.filter(item => item.signature !== event.signature)]);
       return;
     }
     const delay = Math.max(0, Math.floor(Date.now() / 1000 - event.blockTime));
@@ -1399,10 +1500,10 @@ export function TradingApp() {
       walletEnabled: wallet.enabled,
     });
     if (!decision.accepted) {
-      setSkipped(current => [...current, {
+      setSkipped(current => [{
         id: crypto.randomUUID(), signature: event.signature, wallet: wallet.address, mint: event.mint,
         symbol: event.current?.symbol ?? shortAddress(event.mint), detectedAt: new Date().toISOString(), reason: decision.reason ?? "条件外",
-      }]);
+      }, ...current.filter(item => item.signature !== event.signature)]);
       return;
     }
     try {
@@ -1413,7 +1514,7 @@ export function TradingApp() {
       const response = await fetch(`/api/live/quote?mint=${encodeURIComponent(event.mint)}&amountUsd=${settingsRef.current.amountPerTrade}&slippageBps=${Math.round(settingsRef.current.maxSlippage * 100)}`, { cache: "no-store" });
       const payload = await response.json() as { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Jupiter見積もり失敗");
-      setPositions(current => [...current, {
+      setPositions(current => [{
         id: crypto.randomUUID(),
         signature: event.signature,
         wallet: wallet.address,
@@ -1427,14 +1528,17 @@ export function TradingApp() {
         currentPriceUsd: event.current?.priceUsd ?? 0,
         amountUsd: settingsRef.current.amountPerTrade,
         liquidityUsd: event.current?.liquidityUsd ?? 0,
+        entryMarketCapUsd: event.current?.marketCapUsd || undefined,
+        currentMarketCapUsd: event.current?.marketCapUsd || undefined,
+        executionMode: "PAPER",
         status: "OPEN",
-      }]);
+      }, ...current.filter(item => item.signature !== event.signature)]);
     } catch (quoteError) {
-      setSkipped(current => [...current, {
+      setSkipped(current => [{
         id: crypto.randomUUID(), signature: event.signature, wallet: wallet.address, mint: event.mint,
         symbol: event.current?.symbol ?? shortAddress(event.mint), detectedAt: new Date().toISOString(),
         reason: quoteError instanceof Error ? quoteError.message : "Jupiter交換経路なし",
-      }]);
+      }, ...current.filter(item => item.signature !== event.signature)]);
     }
   }, [closePosition]);
 
@@ -1457,15 +1561,11 @@ export function TradingApp() {
         if (position.status !== "OPEN") return position;
         const currentEvent = activityPayload.events.find(event => event.mint === position.mint && event.current);
         if (!currentEvent?.current) return position;
-        const updated = { ...position, currentPriceUsd: currentEvent.current.priceUsd };
-        const pnl = calculatePaperPnl(updated.copyPriceUsd, updated.currentPriceUsd, updated.amountUsd);
-        if (settingsRef.current.takeProfitEnabled && pnl.pnlPct >= settingsRef.current.takeProfit) {
-          return { ...updated, status: "CLOSED", closedAt: new Date().toISOString(), exitPriceUsd: updated.currentPriceUsd, exitReason: "利確" };
-        }
-        if (settingsRef.current.stopLossEnabled && pnl.pnlPct <= -settingsRef.current.stopLoss) {
-          return { ...updated, status: "CLOSED", closedAt: new Date().toISOString(), exitPriceUsd: updated.currentPriceUsd, exitReason: "損切り" };
-        }
-        return updated;
+        return {
+          ...position,
+          currentPriceUsd: currentEvent.current.priceUsd,
+          currentMarketCapUsd: currentEvent.current.marketCapUsd || undefined,
+        };
       }));
       if (analyze && scoreResponse) {
         const scorePayload = await scoreResponse.json() as WalletScore & { error?: string };
@@ -1493,20 +1593,13 @@ export function TradingApp() {
 
   const addManual = (address: string, label: string, origin: TrackedWallet["origin"] = "MANUAL") => {
     if (!ADDRESS_PATTERN.test(address)) return "Solanaウォレットアドレスを確認してください";
-    const manualCount = wallets.filter(wallet => wallet.origin !== "AUTO").length;
     const existing = wallets.find(wallet => wallet.address === address);
-    if (existing && existing.origin !== "AUTO") return "このアドレスは登録済みです";
-    if (manualCount >= 10) return "手動登録は最大10件です";
-    if (existing) {
-      const updated = { ...existing, origin, label: label || existing.label, enabled: true };
-      setWallets(current => current.map(wallet => wallet.address === address ? updated : wallet));
-      void saveTrackedWallet(updated, "PATCH").catch(saveError => setError(saveError instanceof Error ? saveError.message : "ウォレットのDB保存に失敗しました"));
-      return null;
-    }
+    if (existing) return "このアドレスは登録済みです";
+    if (wallets.length >= COPY_SOURCE_WALLET_LIMIT) return `コピー元ウォレットは合計${COPY_SOURCE_WALLET_LIMIT}件までです`;
     const wallet: TrackedWallet = {
       network: "SOLANA",
       address,
-      label: label || `手動 ${manualCount + 1}`,
+      label: label || `コピー元 ${wallets.length + 1}`,
       origin,
       enabled: true,
       addedAt: new Date().toISOString(),
@@ -1540,9 +1633,8 @@ export function TradingApp() {
     setWallets(current => {
       const network = score.network ?? scanNetwork;
       if (current.some(wallet => (wallet.network ?? "SOLANA") === network && wallet.address.toLowerCase() === score.address.toLowerCase())) return current;
-      const autoCount = current.filter(wallet => wallet.origin === "AUTO" && (wallet.network ?? "SOLANA") === network).length;
-      if (autoCount >= 5) {
-        setError("採用候補は最大5件です");
+      if (current.length >= COPY_SOURCE_WALLET_LIMIT) {
+        setError(`コピー元ウォレットは合計${COPY_SOURCE_WALLET_LIMIT}件までです`);
         return current;
       }
       setError(null);
@@ -1593,10 +1685,11 @@ export function TradingApp() {
     }
   };
 
-  const openPositions = positions.filter(position => position.status === "OPEN");
+  const paperPositions = positions.filter(position => (position.executionMode ?? "PAPER") === "PAPER");
+  const openPositions = paperPositions.filter(position => position.status === "OPEN");
   const closedPnl = positions
-    .filter(position => position.status === "CLOSED" && position.exitPriceUsd)
-    .reduce((sum, position) => sum + calculatePaperPnl(position.copyPriceUsd, position.exitPriceUsd ?? position.copyPriceUsd, position.amountUsd).pnlUsd, 0);
+    .filter(position => (position.executionMode ?? "PAPER") === "PAPER" && position.status === "CLOSED" && position.exitPriceUsd)
+    .reduce((sum, position) => sum + (position.realizedPnlUsd ?? calculatePaperPnl(position.copyPriceUsd, position.exitPriceUsd ?? position.copyPriceUsd, position.amountUsd).pnlUsd), 0);
   const openPnl = openPositions.reduce((sum, position) => sum + calculatePaperPnl(position.copyPriceUsd, position.currentPriceUsd, position.amountUsd).pnlUsd, 0);
   const paperBalance = INITIAL_PAPER_BALANCE + closedPnl + openPnl;
   const currentTitle = useMemo(() => nav.find(item => item.id === view)?.label ?? "", [view]);
@@ -1651,14 +1744,14 @@ export function TradingApp() {
           <div className="mb-4 flex flex-wrap gap-2 text-[11px]">
             <Badge tone="green"><ShieldCheck size={12} className="mr-1" />実ウォレットデータのみ</Badge>
             <Badge tone={settings.liveTradingEnabled ? "red" : "amber"}><CircleDollarSign size={12} className="mr-1" />{settings.liveTradingEnabled ? "実資金モード" : "資金はデモ"}</Badge>
-            <Badge tone="gray">手動10件 + 自動5件</Badge>
+            <Badge tone="gray">コピー元 {wallets.length}/{COPY_SOURCE_WALLET_LIMIT}</Badge>
           </div>
           {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} liveMode={settings.liveTradingEnabled} liveStatus={liveStatus} onClose={closePosition} />}
           {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={removeWallet} onToggle={toggleWallet} onStopAll={stopAllWallets} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
-          {view === "scanner" && <Scanner network={scanNetwork} onNetworkChange={setScanNetwork} result={scanResult} scanState={scanState} scanning={scanState?.status === "RUNNING"} wallets={wallets} autoCount={wallets.filter(wallet => wallet.origin === "AUTO" && (wallet.network ?? "SOLANA") === scanNetwork).length} onScan={scan} onAddCandidate={addScanCandidate} />}
+          {view === "scanner" && <Scanner network={scanNetwork} onNetworkChange={setScanNetwork} result={scanResult} scanState={scanState} scanning={scanState?.status === "RUNNING"} wallets={wallets} autoCount={wallets.length} onScan={scan} onAddCandidate={addScanCandidate} />}
           {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} />}
           {view === "activity" && <MobileActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}
-          {view === "settings" && <SettingsView settings={settings} liveStatus={liveStatus} onChange={setSettings} />}
+          {view === "settings" && <SettingsView settings={settings} liveStatus={liveStatus} dailyLoss={dailyLoss} onChange={setSettings} />}
         </main>
       </div>
     </div>

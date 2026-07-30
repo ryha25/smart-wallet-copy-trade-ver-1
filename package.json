@@ -12,7 +12,7 @@
     "replit:dev": "vinext dev --hostname 0.0.0.0 --port 8080",
     "replit:build": "prisma generate && vinext build",
     "replit:start": "node scripts/replit-start.mjs",
-    "test": "node --test tests/paper-trading.test.mjs",
+    "test": "tsx --test tests/*.test.ts && node --test tests/paper-trading.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck": "tsc --noEmit",
     "db:generate": "prisma generate",

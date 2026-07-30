@@ -6,7 +6,10 @@ import {
   installCopyMonitor,
   runCopyMonitorCycle,
   settlePositionById,
+  getLiveDailyLoss,
 } from "../../../services/copy-monitor";
+import { getTokenQuotes } from "../../../services/solana-live";
+import type { ModePerformance } from "../../../lib/live-types";
 
 export async function GET(request: Request) {
   try {
@@ -45,6 +48,52 @@ export async function PUT(request: Request) {
       orderBy: { detectedAt: "desc" },
       take: 500,
     });
+    const openMints = positions
+      .filter(position => position.status === "OPEN")
+      .map(position => position.tokenMint);
+    const quotes = await getTokenQuotes(openMints, { verbose: false }).catch(() => new Map());
+    const todayKey = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Tokyo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    const performanceFor = (mode: "LIVE" | "PAPER"): ModePerformance => {
+      const scoped = positions.filter(position => position.executionMode === mode);
+      const closed = scoped.filter(position => position.status === "CLOSED" && position.pnlUsd != null);
+      const open = scoped.filter(position => position.status === "OPEN");
+      const pnls = closed.map(position => Number(position.pnlUsd ?? 0));
+      const wins = pnls.filter(value => value > 0);
+      const losses = pnls.filter(value => value < 0);
+      const unrealizedPnlUsd = open.reduce((total, position) => {
+        const currentPrice = quotes.get(position.tokenMint)?.priceUsd ?? Number(position.copyPriceUsd);
+        return total + Number(position.quantity) * currentPrice - Number(position.amountUsd);
+      }, 0);
+      const todayPnlUsd = closed
+        .filter(position => position.closedAt && new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Tokyo",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).format(position.closedAt) === todayKey)
+        .reduce((total, position) => total + Number(position.pnlUsd ?? 0), 0);
+      return {
+        mode,
+        realizedPnlUsd: pnls.reduce((total, value) => total + value, 0),
+        unrealizedPnlUsd,
+        todayPnlUsd,
+        winRate: closed.length ? wins.length / closed.length * 100 : 0,
+        closedCount: closed.length,
+        winCount: wins.length,
+        lossCount: losses.length,
+        openCount: open.length,
+        averageWinUsd: wins.length ? wins.reduce((a, b) => a + b, 0) / wins.length : 0,
+        averageLossUsd: losses.length ? losses.reduce((a, b) => a + b, 0) / losses.length : 0,
+        maxWinUsd: wins.length ? Math.max(...wins) : 0,
+        maxLossUsd: losses.length ? Math.min(...losses) : 0,
+      };
+    };
+    const dailyLoss = await getLiveDailyLoss();
     return Response.json({
       positions: positions.map(position => ({
         id: position.id,
@@ -57,7 +106,14 @@ export async function PUT(request: Request) {
         detectionDelaySeconds: Math.floor(position.detectionDelayMs / 1000),
         sourcePriceUsd: Number(position.sourcePriceUsd),
         copyPriceUsd: Number(position.copyPriceUsd),
-        currentPriceUsd: Number(position.exitPriceUsd ?? position.copyPriceUsd),
+        currentPriceUsd: position.status === "OPEN"
+          ? quotes.get(position.tokenMint)?.priceUsd ?? Number(position.copyPriceUsd)
+          : Number(position.exitPriceUsd ?? position.copyPriceUsd),
+        entryMarketCapUsd: position.entryMarketCapUsd ? Number(position.entryMarketCapUsd) : undefined,
+        currentMarketCapUsd: position.status === "OPEN"
+          ? quotes.get(position.tokenMint)?.marketCapUsd || undefined
+          : position.exitMarketCapUsd ? Number(position.exitMarketCapUsd) : undefined,
+        exitMarketCapUsd: position.exitMarketCapUsd ? Number(position.exitMarketCapUsd) : undefined,
         amountUsd: Number(position.amountUsd),
         liquidityUsd: 0,
         status: position.status === "OPEN" ? "OPEN" : "CLOSED",
@@ -67,6 +123,7 @@ export async function PUT(request: Request) {
         closedAt: position.closedAt?.toISOString(),
         exitPriceUsd: position.exitPriceUsd ? Number(position.exitPriceUsd) : undefined,
         exitReason: position.settlementReason ?? undefined,
+        realizedPnlUsd: position.pnlUsd == null ? undefined : Number(position.pnlUsd),
       })),
       skipped: skipped.map(item => ({
         id: item.id,
@@ -76,7 +133,13 @@ export async function PUT(request: Request) {
         symbol: item.tokenSymbol ?? item.tokenMint.slice(0, 8),
         detectedAt: item.detectedAt.toISOString(),
         reason: item.reasonDetail ?? item.reasonCode,
+        executionMode: item.executionMode ?? "UNKNOWN",
       })),
+      performance: {
+        LIVE: performanceFor("LIVE"),
+        PAPER: performanceFor("PAPER"),
+      },
+      dailyLoss,
     }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     return Response.json(apiError(error, "copy-monitor.trades"), { status: 500 });

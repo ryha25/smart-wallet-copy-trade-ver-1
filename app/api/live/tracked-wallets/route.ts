@@ -3,6 +3,12 @@ import { apiError } from "../../../lib/api-errors";
 import { prisma } from "../../../lib/prisma";
 import type { ChainNetwork, TrackedWallet } from "../../../lib/live-types";
 import { installCopyMonitor, runCopyMonitorCycle } from "../../../services/copy-monitor";
+import { COPY_SOURCE_WALLET_LIMIT } from "../../../lib/limits";
+
+const SERVER_COPY_SOURCE_WALLET_LIMIT = Math.max(
+  1,
+  Number(process.env.COPY_SOURCE_WALLET_LIMIT ?? COPY_SOURCE_WALLET_LIMIT) || 30,
+);
 
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const EVM_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
@@ -79,6 +85,16 @@ export async function POST(request: Request) {
     if (unauthorized) return unauthorized;
     const db = databaseRequired();
     const input = await readBody(request);
+    const existing = await db.trackedWallet.findUnique({
+      where: { network_address: { network: input.network, address: input.address } },
+      select: { id: true },
+    });
+    if (!existing) {
+      const total = await db.trackedWallet.count();
+      if (total >= SERVER_COPY_SOURCE_WALLET_LIMIT) {
+        throw new Error(`コピー元ウォレットは合計${SERVER_COPY_SOURCE_WALLET_LIMIT}件まで登録できます`);
+      }
+    }
     const wallet = await db.trackedWallet.upsert({
       where: { network_address: { network: input.network, address: input.address } },
       create: {

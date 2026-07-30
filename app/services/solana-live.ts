@@ -293,22 +293,29 @@ function valueSwaps(
   });
 }
 
-export async function getTokenQuotes(mints: string[]): Promise<Map<string, LiveTokenQuote>> {
+export async function getTokenQuotes(
+  mints: string[],
+  options: { verbose?: boolean } = {},
+): Promise<Map<string, LiveTokenQuote>> {
   const unique = [...new Set(mints)].filter(Boolean).slice(0, 30);
   if (!unique.length) return new Map();
   const dexScreenerUrl = `https://api.dexscreener.com/tokens/v1/solana/${unique.map(encodeURIComponent).join(",")}`;
-  console.info("[NEXT-TRADE][dexscreener] request", { mints: unique, url: dexScreenerUrl });
+  if (options.verbose !== false) {
+    console.info("[NEXT-TRADE][dexscreener] request", { mints: unique, url: dexScreenerUrl });
+  }
   const response = await fetch(dexScreenerUrl, {
     headers: { accept: "application/json" },
     cache: "no-store",
     signal: AbortSignal.timeout(45_000),
   });
   const rawResponse = await response.text();
-  console.info("[NEXT-TRADE][dexscreener] raw response", {
-    status: response.status,
-    statusText: response.statusText,
-    body: rawResponse,
-  });
+  if (options.verbose !== false) {
+    console.info("[NEXT-TRADE][dexscreener] raw response", {
+      status: response.status,
+      statusText: response.statusText,
+      body: rawResponse,
+    });
+  }
   if (!response.ok) throw new Error(`DexScreener API error: HTTP ${response.status} ${response.statusText}; body=${rawResponse.slice(0, 1000)}`);
   let parsedResponse: unknown;
   try {
@@ -330,7 +337,9 @@ export async function getTokenQuotes(mints: string[]): Promise<Map<string, LiveT
     fdv?: number | null;
   }>;
   if (pairs.length === 0) {
-    console.warn("[NEXT-TRADE][dexscreener] pairs is empty", { mints: unique, url: dexScreenerUrl });
+    if (options.verbose !== false) {
+      console.warn("[NEXT-TRADE][dexscreener] pairs is empty", { mints: unique, url: dexScreenerUrl });
+    }
     return new Map();
   }
   const result = new Map<string, LiveTokenQuote>();

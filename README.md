@@ -206,3 +206,29 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+## 損切り監視と安全設定（2026-07-30）
+
+コピー元ウォレットの新規取引監視は標準15秒ですが、保有ポジションの損切り・利確監視は
+別ループで標準1秒です。Reserved VMでは`replit:start`がWebサーバーと両方の監視を起動します。
+
+```env
+COPY_MONITOR_INTERVAL_SECONDS="15"
+POSITION_MONITOR_INTERVAL_MS="1000"
+COPY_SOURCE_WALLET_LIMIT="30"
+NEXT_PUBLIC_COPY_SOURCE_WALLET_LIMIT="30"
+```
+
+`POSITION_MONITOR_INTERVAL_MS`は1,000ms未満には設定できません。1回のAPI呼び出しで最大30銘柄を
+まとめて取得します。STOP_LOSS発動時は`system_logs`へ、検知価格・設定率・検知時刻・注文送信時刻・
+約定時刻・約定価格・価格変動率・流動性・推定原因を保存します。
+
+今回のDB変更をデプロイ前に適用してください。
+
+```bash
+npx prisma generate
+npx prisma migrate deploy
+```
+
+1日の最大損失額はLIVEの当日確定損失だけを日本時間で集計し、上限到達後もSELL監視・損切り・
+利確・コピー元売却追従・手動売却は継続します。PAPER損益と未決済の含み損は含めません。

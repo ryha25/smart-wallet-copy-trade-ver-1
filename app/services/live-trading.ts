@@ -32,6 +32,10 @@ export type LiveSwapResult = {
   inputAmount: string;
   outputAmount: string;
   requestId: string;
+  orderRequestedAt: string;
+  orderReceivedAt: string;
+  executeSubmittedAt: string;
+  executeCompletedAt: string;
 };
 
 function decodeBase58(value: string) {
@@ -168,11 +172,16 @@ export async function executeLiveSwap(input: {
 
   const existing = await prisma.liveTradeExecution.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
   if (existing?.status === "SUCCESS" && existing.signature && existing.outputAmount && existing.requestId) {
+    const completedAt = existing.updatedAt.toISOString();
     return {
       signature: existing.signature,
       inputAmount: existing.inputAmount,
       outputAmount: existing.outputAmount,
       requestId: existing.requestId,
+      orderRequestedAt: existing.createdAt.toISOString(),
+      orderReceivedAt: completedAt,
+      executeSubmittedAt: completedAt,
+      executeCompletedAt: completedAt,
     };
   }
   if (existing?.status === "EXECUTING") {
@@ -201,6 +210,7 @@ export async function executeLiveSwap(input: {
   }
 
   try {
+    const orderRequestedAt = new Date();
     const query = new URLSearchParams({
       inputMint: input.inputMint,
       outputMint: input.outputMint,
@@ -213,6 +223,7 @@ export async function executeLiveSwap(input: {
       signal: AbortSignal.timeout(30_000),
     });
     const order = await readJson<JupiterOrder>(orderResponse, "Jupiter注文作成");
+    const orderReceivedAt = new Date();
     if (!order.transaction || !order.requestId) {
       throw new Error(`Jupiterで交換ルートを作成できません: ${order.errorMessage ?? order.error ?? "取引データなし"}`);
     }
@@ -224,6 +235,13 @@ export async function executeLiveSwap(input: {
     const transaction = VersionedTransaction.deserialize(Buffer.from(order.transaction, "base64"));
     transaction.sign([wallet]);
     const signedTransaction = Buffer.from(transaction.serialize()).toString("base64");
+    const executeSubmittedAt = new Date();
+    console.info("[NEXT-TRADE][live.swap.submitted]", {
+      side: input.side,
+      idempotencyKey: input.idempotencyKey,
+      requestId: order.requestId,
+      submittedAt: executeSubmittedAt.toISOString(),
+    });
     const executeResponse = await fetch(`${JUPITER_SWAP_URL}/execute`, {
       method: "POST",
       headers: {
@@ -234,6 +252,7 @@ export async function executeLiveSwap(input: {
       signal: AbortSignal.timeout(60_000),
     });
     const execution = await readJson<JupiterExecution>(executeResponse, "Jupiter注文実行");
+    const executeCompletedAt = new Date();
     const outputAmount = execution.totalOutputAmount ?? execution.outputAmountResult;
     const inputAmount = execution.totalInputAmount ?? execution.inputAmountResult ?? input.inputAmount;
     if (execution.status !== "Success" || !execution.signature || !outputAmount) {
@@ -257,8 +276,19 @@ export async function executeLiveSwap(input: {
       outputMint: input.outputMint,
       inputAmount,
       outputAmount,
+      orderLatencyMs: orderReceivedAt.getTime() - orderRequestedAt.getTime(),
+      executionLatencyMs: executeCompletedAt.getTime() - executeSubmittedAt.getTime(),
     });
-    return { signature: execution.signature, inputAmount, outputAmount, requestId: order.requestId };
+    return {
+      signature: execution.signature,
+      inputAmount,
+      outputAmount,
+      requestId: order.requestId,
+      orderRequestedAt: orderRequestedAt.toISOString(),
+      orderReceivedAt: orderReceivedAt.toISOString(),
+      executeSubmittedAt: executeSubmittedAt.toISOString(),
+      executeCompletedAt: executeCompletedAt.toISOString(),
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await prisma.liveTradeExecution.update({

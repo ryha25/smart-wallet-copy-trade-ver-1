@@ -1,11 +1,11 @@
 import { Prisma } from "@prisma/client";
 import { defaultSettings } from "../lib/default-settings";
-import { evaluateCopySignal } from "../lib/paper-trading";
+import { evaluateCopySignal, evaluatePositionExit } from "../lib/paper-trading";
 import { prisma } from "../lib/prisma";
-import type { CopyMonitorStatus, LiveWalletEvent } from "../lib/live-types";
+import type { CopyMonitorStatus, LiveTokenQuote, LiveWalletEvent } from "../lib/live-types";
 import type { CopySettings } from "../lib/types";
 import { executeLiveSwap, getLiveTradingStatus, getMintDecimals, USDC_MINT } from "./live-trading";
-import { getLiveWalletActivity, getTokenRisk } from "./solana-live";
+import { getLiveWalletActivity, getTokenQuotes, getTokenRisk } from "./solana-live";
 
 type MonitorRuntime = {
   running: boolean;
@@ -19,6 +19,11 @@ type MonitorRuntime = {
   createdPositions: number;
   skippedTrades: number;
   lastError: string | null;
+  positionRunning: boolean;
+  positionTimer: ReturnType<typeof setInterval> | null;
+  lastPositionCycleAt: string | null;
+  monitoredPositions: number;
+  positionLastError: string | null;
 };
 
 const runtimeRoot = globalThis as typeof globalThis & {
@@ -37,6 +42,11 @@ const runtime = runtimeRoot.nextTradeCopyMonitor ?? {
   createdPositions: 0,
   skippedTrades: 0,
   lastError: null,
+  positionRunning: false,
+  positionTimer: null,
+  lastPositionCycleAt: null,
+  monitoredPositions: 0,
+  positionLastError: null,
 };
 runtimeRoot.nextTradeCopyMonitor = runtime;
 
@@ -56,6 +66,9 @@ function dbSettingsToClient(settings: {
   amountPerTradeUsd: Prisma.Decimal;
   maxPositions: number;
   maxDailyAmountUsd: Prisma.Decimal;
+  dailyLossLimitEnabled: boolean;
+  dailyLossLimitUsd: Prisma.Decimal;
+  dailyLossIncludeUnrealized: boolean;
   stopLossEnabled: boolean;
   stopLossPercent: Prisma.Decimal;
   takeProfitEnabled: boolean;
@@ -72,6 +85,9 @@ function dbSettingsToClient(settings: {
     amountPerTrade: Number(settings.amountPerTradeUsd),
     maxPositions: settings.maxPositions,
     maxDailyAmount: Number(settings.maxDailyAmountUsd),
+    dailyLossLimitEnabled: settings.dailyLossLimitEnabled,
+    dailyLossLimit: Number(settings.dailyLossLimitUsd),
+    dailyLossIncludeUnrealized: settings.dailyLossIncludeUnrealized,
     stopLossEnabled: settings.stopLossEnabled,
     stopLoss: Number(settings.stopLossPercent),
     takeProfitEnabled: settings.takeProfitEnabled,
@@ -96,12 +112,15 @@ export async function getOrCreateCopySettings() {
       amountPerTradeUsd: defaultSettings.amountPerTrade,
       maxPositions: defaultSettings.maxPositions,
       maxDailyAmountUsd: defaultSettings.maxDailyAmount,
+      dailyLossLimitEnabled: defaultSettings.dailyLossLimitEnabled,
+      dailyLossLimitUsd: defaultSettings.dailyLossLimit,
+      dailyLossIncludeUnrealized: false,
       stopLossEnabled: defaultSettings.stopLossEnabled,
       stopLossPercent: defaultSettings.stopLoss,
       takeProfitEnabled: defaultSettings.takeProfitEnabled,
       takeProfitPercent: defaultSettings.takeProfit,
       maxSlippagePercent: defaultSettings.maxSlippage,
-      maxWallets: 15,
+      maxWallets: 30,
       allowDuplicateToken: defaultSettings.allowDuplicate,
       favoritesOnly: false,
       maxDetectionSeconds: defaultSettings.maxDetectionSeconds,
@@ -129,12 +148,15 @@ export async function saveCopySettings(settings: CopySettings) {
       amountPerTradeUsd: settings.amountPerTrade,
       maxPositions: settings.maxPositions,
       maxDailyAmountUsd: settings.maxDailyAmount,
+      dailyLossLimitEnabled: settings.dailyLossLimitEnabled,
+      dailyLossLimitUsd: settings.dailyLossLimit,
+      dailyLossIncludeUnrealized: false,
       stopLossEnabled: settings.stopLossEnabled,
       stopLossPercent: settings.stopLoss,
       takeProfitEnabled: settings.takeProfitEnabled,
       takeProfitPercent: settings.takeProfit,
       maxSlippagePercent: settings.maxSlippage,
-      maxWallets: 15,
+      maxWallets: 30,
       allowDuplicateToken: settings.allowDuplicate,
       favoritesOnly: false,
       maxDetectionSeconds: settings.maxDetectionSeconds,
@@ -147,6 +169,9 @@ export async function saveCopySettings(settings: CopySettings) {
       amountPerTradeUsd: settings.amountPerTrade,
       maxPositions: settings.maxPositions,
       maxDailyAmountUsd: settings.maxDailyAmount,
+      dailyLossLimitEnabled: settings.dailyLossLimitEnabled,
+      dailyLossLimitUsd: settings.dailyLossLimit,
+      dailyLossIncludeUnrealized: false,
       stopLossEnabled: settings.stopLossEnabled,
       stopLossPercent: settings.stopLoss,
       takeProfitEnabled: settings.takeProfitEnabled,
@@ -169,6 +194,39 @@ async function logEvent(event: string, message: string, metadata?: Prisma.InputJ
   }).catch(error => console.error("[NEXT-TRADE][copy.monitor.log]", error));
 }
 
+function tokyoDayRange(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find(part => part.type === type)?.value);
+  const start = new Date(Date.UTC(value("year"), value("month") - 1, value("day")) - 9 * 60 * 60 * 1000);
+  return { start, end: new Date(start.getTime() + 24 * 60 * 60 * 1000) };
+}
+
+export async function getLiveDailyLoss(userId?: string) {
+  if (!prisma) return { lossUsd: 0, nextResetAt: null as string | null };
+  const resolvedUserId = userId ?? (await ensureAppUser()).id;
+  const { start, end } = tokyoDayRange();
+  const losses = await prisma.paperPosition.findMany({
+    where: {
+      userId: resolvedUserId,
+      executionMode: "LIVE",
+      status: "CLOSED",
+      closedAt: { gte: start, lt: end },
+      pnlUsd: { lt: 0 },
+    },
+    select: { pnlUsd: true },
+  });
+  return {
+    lossUsd: losses.reduce((total, item) => total + Math.abs(Number(item.pnlUsd ?? 0)), 0),
+    nextResetAt: end.toISOString(),
+  };
+}
+
 function latestSignature(events: LiveWalletEvent[]) {
   return [...events].sort((a, b) => b.blockTime - a.blockTime)[0]?.signature ?? null;
 }
@@ -184,6 +242,7 @@ async function skipTrade(
   walletId: string,
   event: LiveWalletEvent,
   reason: string,
+  executionMode: "PAPER" | "LIVE" = "PAPER",
 ) {
   if (!prisma) return;
   await prisma.skippedTrade.upsert({
@@ -204,13 +263,14 @@ async function skipTrade(
       sourceBoughtAt: new Date(event.blockTime * 1000),
       reasonCode: reason,
       reasonDetail: reason,
+      executionMode,
       signalSnapshot: {
         signature: event.signature,
         sourcePriceUsd: event.sourcePriceUsd,
         currentPriceUsd: event.current?.priceUsd ?? null,
       },
     },
-    update: { reasonCode: reason, reasonDetail: reason },
+    update: { reasonCode: reason, reasonDetail: reason, executionMode },
   });
   runtime.skippedTrades++;
   await logEvent("skipped", `見送り: ${reason}`, {
@@ -228,6 +288,7 @@ async function processBuy(
   settings: CopySettings,
 ) {
   if (!prisma) return;
+  const intendedMode: "PAPER" | "LIVE" = settings.liveTradingEnabled ? "LIVE" : "PAPER";
   runtime.newBuyCount++;
   await logEvent("buy.detected", "新規BUYを検知", {
     wallet: wallet.address,
@@ -235,21 +296,37 @@ async function processBuy(
     mint: event.mint,
   });
 
+  if (intendedMode === "LIVE" && settings.dailyLossLimitEnabled) {
+    const dailyLoss = await getLiveDailyLoss(userId);
+    if (dailyLoss.lossUsd >= settings.dailyLossLimit) {
+      await logEvent("buy.daily-loss-blocked", "Daily LIVE loss limit reached; new BUY stopped", {
+        dailyLossLimitUsd: settings.dailyLossLimit,
+        currentDailyLossUsd: dailyLoss.lossUsd,
+        checkedAt: new Date().toISOString(),
+        signal: event.signature,
+        sourceWallet: wallet.address,
+        tokenMint: event.mint,
+        nextResetAt: dailyLoss.nextResetAt,
+      }, true);
+      await skipTrade(userId, wallet.id, event, "DAILY_LOSS_LIMIT_REACHED", "LIVE");
+      return;
+    }
+  }
+
   if (!event.current || event.current.priceUsd <= 0) {
-    await skipTrade(userId, wallet.id, event, "現在価格を取得できない");
+    await skipTrade(userId, wallet.id, event, "現在価格を取得できない", intendedMode);
     return;
   }
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const { start: today, end: tomorrow } = tokyoDayRange();
   const [openPositions, dailyTrades, existingPosition] = await Promise.all([
-    prisma.paperPosition.count({ where: { userId, status: "OPEN" } }),
+    prisma.paperPosition.count({ where: { userId, executionMode: intendedMode, status: "OPEN" } }),
     prisma.paperPosition.aggregate({
-      where: { userId, copiedAt: { gte: today } },
+      where: { userId, executionMode: intendedMode, copiedAt: { gte: today, lt: tomorrow } },
       _sum: { amountUsd: true },
     }),
     prisma.paperPosition.findFirst({
-      where: { userId, tokenMint: event.mint, status: "OPEN" },
+      where: { userId, executionMode: intendedMode, tokenMint: event.mint, status: "OPEN" },
       select: { id: true },
     }),
   ]);
@@ -266,18 +343,18 @@ async function processBuy(
   });
 
   if (!decision.accepted) {
-    await skipTrade(userId, wallet.id, event, decision.reason ?? "コピー条件外");
+    await skipTrade(userId, wallet.id, event, decision.reason ?? "コピー条件外", intendedMode);
     return;
   }
 
   try {
     const risk = await getTokenRisk(event.mint);
     if (!risk.safe) {
-      await skipTrade(userId, wallet.id, event, `危険トークン: ${risk.risks.slice(0, 3).join("・")}`);
+      await skipTrade(userId, wallet.id, event, `危険トークン: ${risk.risks.slice(0, 3).join("・")}`, intendedMode);
       return;
     }
   } catch (error) {
-    await skipTrade(userId, wallet.id, event, `危険判定失敗: ${error instanceof Error ? error.message : String(error)}`);
+    await skipTrade(userId, wallet.id, event, `危険判定失敗: ${error instanceof Error ? error.message : String(error)}`, intendedMode);
     return;
   }
 
@@ -292,6 +369,22 @@ async function processBuy(
 
   if (settings.liveTradingEnabled) {
     try {
+      if (settings.dailyLossLimitEnabled) {
+        const orderTimeLoss = await getLiveDailyLoss(userId);
+        if (orderTimeLoss.lossUsd >= settings.dailyLossLimit) {
+          await skipTrade(userId, wallet.id, event, "DAILY_LOSS_LIMIT_REACHED", "LIVE");
+          await logEvent("buy.daily-loss-blocked", "Daily LIVE loss limit reached immediately before order", {
+            dailyLossLimitUsd: settings.dailyLossLimit,
+            currentDailyLossUsd: orderTimeLoss.lossUsd,
+            checkedAt: new Date().toISOString(),
+            signal: event.signature,
+            sourceWallet: wallet.address,
+            tokenMint: event.mint,
+            nextResetAt: orderTimeLoss.nextResetAt,
+          }, true);
+          return;
+        }
+      }
       tokenDecimals = await getMintDecimals(event.mint);
       const swap = await executeLiveSwap({
         idempotencyKey: `BUY:${wallet.id}:${event.signature}:${event.mint}`,
@@ -311,7 +404,7 @@ async function processBuy(
       executionMode = "LIVE";
       buySignature = swap.signature;
     } catch (error) {
-      await skipTrade(userId, wallet.id, event, `実売買失敗: ${error instanceof Error ? error.message : String(error)}`);
+      await skipTrade(userId, wallet.id, event, `実売買失敗: ${error instanceof Error ? error.message : String(error)}`, intendedMode);
       return;
     }
   }
@@ -336,6 +429,7 @@ async function processBuy(
       detectionDelayMs: delaySeconds * 1000,
       sourcePriceUsd: sourcePrice,
       copyPriceUsd,
+      entryMarketCapUsd: event.current.marketCapUsd > 0 ? event.current.marketCapUsd : null,
       slippagePercent: slippage,
       amountUsd,
       amountSol: 0,
@@ -360,10 +454,22 @@ async function processBuy(
   }, true);
 }
 
+type ExitTriggerContext = {
+  triggerAt: string;
+  observedPriceUsd: number;
+  observedMarketCapUsd?: number;
+  configuredPercent?: number;
+  observedPnlPercent: number;
+  priceSource: string;
+  monitorIntervalMs: number;
+  liquidityUsd?: number;
+};
+
 export async function settlePositionById(
   positionId: string,
   settlementReason: "SOURCE_SOLD" | "TAKE_PROFIT" | "STOP_LOSS" | "MANUAL" | "MAX_HOLDING_TIME" | "RISK_DETECTED",
   quotedExitPrice?: number,
+  trigger?: ExitTriggerContext,
 ) {
   if (!prisma) throw new Error("DATABASE_URLが未設定です");
   const position = await prisma.paperPosition.findUniqueOrThrow({
@@ -375,9 +481,21 @@ export async function settlePositionById(
   let exitPrice = quotedExitPrice;
   let pnlUsd: number;
   let sellSignature: string | undefined;
+  let sellSubmittedAt = new Date().toISOString();
+  let sellFilledAt = sellSubmittedAt;
   if (position.executionMode === "LIVE") {
     if (!position.rawTokenAmount) throw new Error("実売買ポジションのトークン数量が保存されていません");
     const settings = await getOrCreateCopySettings();
+    sellSubmittedAt = new Date().toISOString();
+    await logEvent("exit.order-submitting", "LIVE sell order is being submitted", {
+      positionId: position.id,
+      settlementReason,
+      buyPriceUsd: Number(position.copyPriceUsd),
+      observedPriceUsd: trigger?.observedPriceUsd ?? quotedExitPrice ?? null,
+      configuredPercent: trigger?.configuredPercent ?? null,
+      triggerAt: trigger?.triggerAt ?? null,
+      sellSubmittedAt,
+    }, true);
     const swap = await executeLiveSwap({
       idempotencyKey: `SELL:${position.id}`,
       userId: position.userId,
@@ -394,6 +512,8 @@ export async function settlePositionById(
     exitPrice = proceedsUsd / quantity;
     pnlUsd = proceedsUsd - Number(position.amountUsd);
     sellSignature = swap.signature;
+    sellSubmittedAt = swap.executeSubmittedAt;
+    sellFilledAt = swap.executeCompletedAt;
   } else {
     if (!exitPrice || exitPrice <= 0) throw new Error("ペーパートレードの決済価格を取得できません");
     pnlUsd = Number(position.quantity) * exitPrice - Number(position.amountUsd);
@@ -406,6 +526,9 @@ export async function settlePositionById(
       status: "CLOSED",
       closedAt: new Date(),
       exitPriceUsd: exitPrice,
+      exitMarketCapUsd: trigger?.observedMarketCapUsd && trigger.observedMarketCapUsd > 0 && trigger.observedPriceUsd > 0
+        ? trigger.observedMarketCapUsd * exitPrice / trigger.observedPriceUsd
+        : null,
       pnlPercent,
       pnlUsd,
       pnlSol: 0,
@@ -413,6 +536,51 @@ export async function settlePositionById(
       settlementReason,
     },
   });
+  const buyPriceUsd = Number(position.copyPriceUsd);
+  const observedPriceUsd = trigger?.observedPriceUsd ?? quotedExitPrice ?? exitPrice;
+  const fillVsObservedPercent = observedPriceUsd > 0
+    ? (exitPrice - observedPriceUsd) / observedPriceUsd * 100
+    : null;
+  const triggerAtMs = trigger ? Date.parse(trigger.triggerAt) : Date.parse(sellSubmittedAt);
+  const submitAtMs = Date.parse(sellSubmittedAt);
+  const fillAtMs = Date.parse(sellFilledAt);
+  const thresholdOvershootPercent = trigger?.configuredPercent == null
+    ? null
+    : Math.max(0, Math.abs(Math.min(0, trigger.observedPnlPercent)) - trigger.configuredPercent);
+  const causeHint =
+    thresholdOvershootPercent != null && thresholdOvershootPercent >= 3
+      ? "PRICE_GAP_OR_DETECTION_DELAY"
+      : fillVsObservedPercent != null && fillVsObservedPercent <= -1
+        ? "LIQUIDITY_OR_EXECUTION_SLIPPAGE"
+        : fillAtMs - submitAtMs >= 3_000
+          ? "ORDER_EXECUTION_DELAY"
+          : "NO_LARGE_TECHNICAL_DELAY_DETECTED";
+  await logEvent("exit.filled", "Position exit completed", {
+    positionId: position.id,
+    tokenMint: position.tokenMint,
+    executionMode: position.executionMode,
+    settlementReason,
+    buyPriceUsd,
+    observedPriceUsd,
+    stopLossPercent: settlementReason === "STOP_LOSS" ? trigger?.configuredPercent ?? null : null,
+    takeProfitPercent: settlementReason === "TAKE_PROFIT" ? trigger?.configuredPercent ?? null : null,
+    triggerAt: trigger?.triggerAt ?? null,
+    sellSubmittedAt,
+    sellFilledAt,
+    fillPriceUsd: exitPrice,
+    observedPnlPercent: trigger?.observedPnlPercent ?? null,
+    fillPnlPercent: pnlPercent,
+    fillVsObservedPercent,
+    thresholdOvershootPercent,
+    detectionToSubmitMs: Number.isFinite(triggerAtMs) ? Math.max(0, submitAtMs - triggerAtMs) : null,
+    submitToFillMs: Number.isFinite(submitAtMs) ? Math.max(0, fillAtMs - submitAtMs) : null,
+    triggerToFillMs: Number.isFinite(triggerAtMs) ? Math.max(0, fillAtMs - triggerAtMs) : null,
+    liquidityUsd: trigger?.liquidityUsd ?? null,
+    priceSource: trigger?.priceSource ?? null,
+    monitorIntervalMs: trigger?.monitorIntervalMs ?? null,
+    causeHint,
+    sellSignature,
+  }, true);
   await logEvent("copy.closed", position.executionMode === "LIVE" ? "実売買ポジションを決済" : "ペーパートレードを決済", {
     wallet: position.sourceWallet.address,
     positionId: position.id,
@@ -441,40 +609,6 @@ async function processSell(
   }
 }
 
-async function applyAutomaticExits(
-  wallet: { id: string; address: string },
-  events: LiveWalletEvent[],
-  settings: CopySettings,
-) {
-  if (!prisma || (!settings.takeProfitEnabled && !settings.stopLossEnabled)) return;
-  const latestPriceByMint = new Map<string, number>();
-  for (const event of [...events].sort((a, b) => b.blockTime - a.blockTime)) {
-    const price = event.current?.priceUsd;
-    if (price && price > 0 && !latestPriceByMint.has(event.mint)) {
-      latestPriceByMint.set(event.mint, price);
-    }
-  }
-
-  const positions = await prisma.paperPosition.findMany({
-    where: { sourceWalletId: wallet.id, status: "OPEN" },
-  });
-  for (const position of positions) {
-    const currentPrice = latestPriceByMint.get(position.tokenMint);
-    if (!currentPrice) continue;
-    const entryPrice = Number(position.copyPriceUsd);
-    const pnlPercent = (currentPrice - entryPrice) / entryPrice * 100;
-    const reason =
-      settings.takeProfitEnabled && pnlPercent >= settings.takeProfit
-        ? "TAKE_PROFIT"
-        : settings.stopLossEnabled && pnlPercent <= -settings.stopLoss
-          ? "STOP_LOSS"
-          : null;
-    if (!reason) continue;
-
-    await settlePositionById(position.id, reason, currentPrice);
-  }
-}
-
 async function monitorWallet(
   userId: string,
   wallet: {
@@ -489,7 +623,6 @@ async function monitorWallet(
 ) {
   if (!prisma) return;
   const activity = await getLiveWalletActivity(wallet.address);
-  await applyAutomaticExits(wallet, activity.events, settings);
   const newest = latestSignature(activity.events);
   await logEvent("wallet.checked", "監視ウォレットを確認", {
     address: wallet.address,
@@ -523,6 +656,115 @@ async function monitorWallet(
     where: { id: wallet.id },
     data: { lastObservedSignature: newest, lastCheckedAt: new Date() },
   });
+}
+
+export async function runPositionMonitorCycle() {
+  if (runtime.positionRunning || !prisma) {
+    return {
+      running: runtime.positionRunning,
+      lastCycleAt: runtime.lastPositionCycleAt,
+      monitoredPositions: runtime.monitoredPositions,
+      lastError: runtime.positionLastError,
+    };
+  }
+  runtime.positionRunning = true;
+  runtime.positionLastError = null;
+  const monitorIntervalMs = Math.max(
+    1_000,
+    Number(process.env.POSITION_MONITOR_INTERVAL_MS ?? "1000") || 1_000,
+  );
+  try {
+    const settings = await getOrCreateCopySettings();
+    const positions = await prisma.paperPosition.findMany({
+      where: { status: "OPEN" },
+      orderBy: { copiedAt: "asc" },
+    });
+    runtime.monitoredPositions = positions.length;
+    if (!positions.length || (!settings.stopLossEnabled && !settings.takeProfitEnabled)) {
+      runtime.lastPositionCycleAt = new Date().toISOString();
+      return {
+        running: false,
+        lastCycleAt: runtime.lastPositionCycleAt,
+        monitoredPositions: runtime.monitoredPositions,
+        lastError: null,
+      };
+    }
+
+    const uniqueMints = [...new Set(positions.map(position => position.tokenMint))];
+    const quotes = new Map<string, LiveTokenQuote>();
+    for (let index = 0; index < uniqueMints.length; index += 30) {
+      const batch = await getTokenQuotes(uniqueMints.slice(index, index + 30), { verbose: false });
+      for (const [mint, quote] of batch) quotes.set(mint, quote);
+    }
+    for (const position of positions) {
+      const quote = quotes.get(position.tokenMint);
+      if (!quote?.priceUsd || quote.priceUsd <= 0) continue;
+      const entryPrice = Number(position.copyPriceUsd);
+      const decision = evaluatePositionExit(entryPrice, quote.priceUsd, settings);
+      const observedPnlPercent = decision.pnlPercent;
+      const reason = decision.reason;
+      if (!reason || observedPnlPercent == null) continue;
+
+      const triggerAt = new Date().toISOString();
+      const configuredPercent = reason === "STOP_LOSS" ? settings.stopLoss : settings.takeProfit;
+      const trigger: ExitTriggerContext = {
+        triggerAt,
+        observedPriceUsd: quote.priceUsd,
+        observedMarketCapUsd: quote.marketCapUsd > 0 ? quote.marketCapUsd : undefined,
+        configuredPercent,
+        observedPnlPercent,
+        priceSource: `DEXSCREENER:${quote.dex}`,
+        monitorIntervalMs,
+        liquidityUsd: quote.liquidityUsd,
+      };
+      await logEvent("exit.triggered", `${reason} threshold reached`, {
+        positionId: position.id,
+        executionMode: position.executionMode,
+        tokenMint: position.tokenMint,
+        buyPriceUsd: entryPrice,
+        currentPriceUsd: quote.priceUsd,
+        configuredPercent,
+        observedPnlPercent,
+        triggerAt,
+        monitorIntervalMs,
+        liquidityUsd: quote.liquidityUsd,
+        priceSource: trigger.priceSource,
+      }, true);
+      try {
+        await settlePositionById(position.id, reason, quote.priceUsd, trigger);
+      } catch (error) {
+        await logEvent("exit.failed", `${reason} exit failed`, {
+          positionId: position.id,
+          executionMode: position.executionMode,
+          tokenMint: position.tokenMint,
+          buyPriceUsd: entryPrice,
+          currentPriceUsd: quote.priceUsd,
+          configuredPercent,
+          observedPnlPercent,
+          triggerAt,
+          failedAt: new Date().toISOString(),
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : null,
+          liquidityUsd: quote.liquidityUsd,
+        }, true);
+      }
+    }
+    runtime.lastPositionCycleAt = new Date().toISOString();
+  } catch (error) {
+    runtime.positionLastError = error instanceof Error ? error.message : String(error);
+    console.error("[NEXT-TRADE][position.monitor.cycle]", {
+      message: runtime.positionLastError,
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+  } finally {
+    runtime.positionRunning = false;
+  }
+  return {
+    running: runtime.positionRunning,
+    lastCycleAt: runtime.lastPositionCycleAt,
+    monitoredPositions: runtime.monitoredPositions,
+    lastError: runtime.positionLastError,
+  };
 }
 
 export async function runCopyMonitorCycle() {
@@ -595,11 +837,22 @@ export async function runCopyMonitorCycle() {
 
 export function installCopyMonitor() {
   if (process.env.COPY_MONITOR_EXTERNAL_WORKER === "true") return;
-  if (runtime.timer || !prisma) return;
-  const seconds = Math.max(10, Number(process.env.COPY_MONITOR_INTERVAL_SECONDS ?? "15") || 15);
-  runtime.timer = setInterval(() => { void runCopyMonitorCycle(); }, seconds * 1000);
-  runtime.timer.unref?.();
-  void runCopyMonitorCycle();
+  if (!prisma) return;
+  if (!runtime.timer) {
+    const seconds = Math.max(10, Number(process.env.COPY_MONITOR_INTERVAL_SECONDS ?? "15") || 15);
+    runtime.timer = setInterval(() => { void runCopyMonitorCycle(); }, seconds * 1000);
+    runtime.timer.unref?.();
+    void runCopyMonitorCycle();
+  }
+  if (!runtime.positionTimer) {
+    const intervalMs = Math.max(
+      1_000,
+      Number(process.env.POSITION_MONITOR_INTERVAL_MS ?? "1000") || 1_000,
+    );
+    runtime.positionTimer = setInterval(() => { void runPositionMonitorCycle(); }, intervalMs);
+    runtime.positionTimer.unref?.();
+    void runPositionMonitorCycle();
+  }
 }
 
 export function getCopyMonitorStatus(): CopyMonitorStatus {
