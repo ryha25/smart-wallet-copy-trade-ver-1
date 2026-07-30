@@ -1,5 +1,7 @@
 import { runCopyMonitorCycle, runPositionMonitorCycle } from "../app/services/copy-monitor";
 
+process.env.COPY_MONITOR_WORKER_PROCESS = "true";
+
 const intervalSeconds = Math.max(10, Number(process.env.COPY_MONITOR_INTERVAL_SECONDS ?? "15") || 15);
 const positionIntervalMs = Math.max(
   1_000,

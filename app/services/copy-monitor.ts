@@ -768,6 +768,12 @@ export async function runPositionMonitorCycle() {
 }
 
 export async function runCopyMonitorCycle() {
+  if (
+    process.env.COPY_MONITOR_EXTERNAL_WORKER === "true"
+    && process.env.COPY_MONITOR_WORKER_PROCESS !== "true"
+  ) {
+    return getCopyMonitorStatus();
+  }
   if (runtime.running || !prisma) return getCopyMonitorStatus();
   runtime.running = true;
   runtime.newBuyCount = 0;
