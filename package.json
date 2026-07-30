@@ -7,10 +7,10 @@
   },
   "scripts": {
     "dev": "vinext dev",
-    "build": "vinext build",
+    "build": "node scripts/clean-build.mjs && vinext build",
     "start": "vinext start",
     "replit:dev": "vinext dev --hostname 0.0.0.0 --port 8080",
-    "replit:build": "prisma generate && vinext build",
+    "replit:build": "prisma generate && node scripts/clean-build.mjs && vinext build",
     "replit:start": "node scripts/replit-start.mjs",
     "test": "tsx --test tests/*.test.ts && node --test tests/paper-trading.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",

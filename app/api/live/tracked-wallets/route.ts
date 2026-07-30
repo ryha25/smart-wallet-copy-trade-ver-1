@@ -7,7 +7,7 @@ import { COPY_SOURCE_WALLET_LIMIT } from "../../../lib/limits";
 
 const SERVER_COPY_SOURCE_WALLET_LIMIT = Math.max(
   1,
-  Number(process.env.COPY_SOURCE_WALLET_LIMIT ?? COPY_SOURCE_WALLET_LIMIT) || 30,
+  Number(process.env.COPY_SOURCE_WALLET_TOTAL_LIMIT ?? COPY_SOURCE_WALLET_LIMIT) || 30,
 );
 
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;

@@ -156,6 +156,18 @@ export async function getMintDecimals(mint: string) {
   return supply.value.decimals;
 }
 
+export async function getLiveTokenRawBalance(mint: string) {
+  const wallet = loadTradingWallet();
+  const accounts = await getConnection().getParsedTokenAccountsByOwner(
+    wallet.publicKey,
+    { mint: new PublicKey(mint) },
+  );
+  return accounts.value.reduce((total, account) => {
+    const amount = account.account.data.parsed.info.tokenAmount.amount;
+    return total + BigInt(String(amount ?? "0"));
+  }, BigInt(0));
+}
+
 export async function executeLiveSwap(input: {
   idempotencyKey: string;
   userId: string;

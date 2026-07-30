@@ -4,7 +4,13 @@ import { evaluateCopySignal, evaluatePositionExit } from "../lib/paper-trading";
 import { prisma } from "../lib/prisma";
 import type { CopyMonitorStatus, LiveTokenQuote, LiveWalletEvent } from "../lib/live-types";
 import type { CopySettings } from "../lib/types";
-import { executeLiveSwap, getLiveTradingStatus, getMintDecimals, USDC_MINT } from "./live-trading";
+import {
+  executeLiveSwap,
+  getLiveTokenRawBalance,
+  getLiveTradingStatus,
+  getMintDecimals,
+  USDC_MINT,
+} from "./live-trading";
 import { getLiveWalletActivity, getTokenQuotes, getTokenRisk } from "./solana-live";
 
 type MonitorRuntime = {
@@ -24,6 +30,7 @@ type MonitorRuntime = {
   lastPositionCycleAt: string | null;
   monitoredPositions: number;
   positionLastError: string | null;
+  lastBalanceReconcileAt: number;
 };
 
 const runtimeRoot = globalThis as typeof globalThis & {
@@ -47,6 +54,7 @@ const runtime = runtimeRoot.nextTradeCopyMonitor ?? {
   lastPositionCycleAt: null,
   monitoredPositions: 0,
   positionLastError: null,
+  lastBalanceReconcileAt: 0,
 };
 runtimeRoot.nextTradeCopyMonitor = runtime;
 
@@ -658,6 +666,119 @@ async function monitorWallet(
   });
 }
 
+function isEffectivelyEmptyBalance(balance: bigint, expected: bigint) {
+  if (balance === BigInt(0)) return true;
+  if (expected <= BigInt(0)) return false;
+  // Jupiterや外部ウォレットの売却後に残る極小dustは保有として扱わない。
+  const dustThreshold = expected / BigInt(1_000);
+  return balance <= (dustThreshold > BigInt(1) ? dustThreshold : BigInt(1));
+}
+
+async function reconcileLivePositionBalances(
+  positions: Array<{
+    id: string;
+    userId: string;
+    tokenMint: string;
+    copiedAt: Date;
+    rawTokenAmount: string | null;
+    amountUsd: Prisma.Decimal;
+    quantity: Prisma.Decimal;
+  }>,
+) {
+  if (!prisma) return new Set<string>();
+  const intervalMs = Math.max(
+    5_000,
+    Number(process.env.LIVE_BALANCE_RECONCILE_INTERVAL_MS ?? "15000") || 15_000,
+  );
+  const now = Date.now();
+  if (now - runtime.lastBalanceReconcileAt < intervalMs) return new Set<string>();
+  runtime.lastBalanceReconcileAt = now;
+  const graceMs = Math.max(
+    30_000,
+    Number(process.env.LIVE_BALANCE_RECONCILE_GRACE_MS ?? "60000") || 60_000,
+  );
+
+  const groups = new Map<string, typeof positions>();
+  for (const position of positions) {
+    // BUY直後はRPC反映前に残高0が返る場合があるため、誤決済を防ぐ。
+    if (now - position.copiedAt.getTime() < graceMs) continue;
+    const current = groups.get(position.tokenMint) ?? [];
+    current.push(position);
+    groups.set(position.tokenMint, current);
+  }
+
+  const reconciled = new Set<string>();
+  for (const [mint, mintPositions] of groups) {
+    const expected = mintPositions.reduce((total, position) => {
+      try {
+        return total + BigInt(position.rawTokenAmount ?? "0");
+      } catch {
+        return total;
+      }
+    }, BigInt(0));
+    if (expected <= BigInt(0)) continue;
+
+    try {
+      const actual = await getLiveTokenRawBalance(mint);
+      if (!isEffectivelyEmptyBalance(actual, expected)) continue;
+
+      for (const position of mintPositions) {
+        const successfulSell = await prisma.liveTradeExecution.findFirst({
+          where: {
+            paperPositionId: position.id,
+            side: "SELL",
+            status: "SUCCESS",
+          },
+          orderBy: { updatedAt: "desc" },
+        });
+        const proceedsUsd = successfulSell?.outputAmount
+          ? Number(successfulSell.outputAmount) / 1_000_000
+          : null;
+        const quantity = Number(position.quantity);
+        const amountUsd = Number(position.amountUsd);
+        const hasExactExecution = proceedsUsd != null
+          && Number.isFinite(proceedsUsd)
+          && proceedsUsd >= 0
+          && quantity > 0;
+
+        await prisma.paperPosition.updateMany({
+          where: { id: position.id, status: "OPEN", executionMode: "LIVE" },
+          data: {
+            status: "CLOSED",
+            closedAt: successfulSell?.updatedAt ?? new Date(),
+            exitPriceUsd: hasExactExecution ? proceedsUsd / quantity : null,
+            pnlPercent: hasExactExecution && amountUsd > 0
+              ? (proceedsUsd - amountUsd) / amountUsd * 100
+              : null,
+            pnlUsd: hasExactExecution ? proceedsUsd - amountUsd : null,
+            pnlSol: null,
+            sellSignature: successfulSell?.signature ?? null,
+            settlementReason: "MANUAL",
+          },
+        });
+        reconciled.add(position.id);
+        await logEvent("position.balance-reconciled", "ウォレット残高0のためLIVE保有状態を決済済みに同期", {
+          positionId: position.id,
+          tokenMint: mint,
+          expectedRawBalance: position.rawTokenAmount,
+          walletRawBalance: actual.toString(),
+          sellExecutionFound: Boolean(successfulSell),
+          realizedPnlRecorded: hasExactExecution,
+          sellSignature: successfulSell?.signature ?? null,
+        }, true);
+      }
+    } catch (error) {
+      await logEvent("position.balance-reconcile-failed", "LIVEトークン残高との照合に失敗", {
+        tokenMint: mint,
+        positionIds: mintPositions.map(position => position.id),
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : null,
+      }, true);
+    }
+  }
+  return reconciled;
+}
+
 export async function runPositionMonitorCycle() {
   if (runtime.positionRunning || !prisma) {
     return {
@@ -680,7 +801,11 @@ export async function runPositionMonitorCycle() {
       orderBy: { copiedAt: "asc" },
     });
     runtime.monitoredPositions = positions.length;
-    if (!positions.length || (!settings.stopLossEnabled && !settings.takeProfitEnabled)) {
+    const livePositions = positions.filter(position => position.executionMode === "LIVE");
+    const reconciledIds = await reconcileLivePositionBalances(livePositions);
+    const activePositions = positions.filter(position => !reconciledIds.has(position.id));
+    runtime.monitoredPositions = activePositions.length;
+    if (!activePositions.length || (!settings.stopLossEnabled && !settings.takeProfitEnabled)) {
       runtime.lastPositionCycleAt = new Date().toISOString();
       return {
         running: false,
@@ -690,13 +815,13 @@ export async function runPositionMonitorCycle() {
       };
     }
 
-    const uniqueMints = [...new Set(positions.map(position => position.tokenMint))];
+    const uniqueMints = [...new Set(activePositions.map(position => position.tokenMint))];
     const quotes = new Map<string, LiveTokenQuote>();
     for (let index = 0; index < uniqueMints.length; index += 30) {
       const batch = await getTokenQuotes(uniqueMints.slice(index, index + 30), { verbose: false });
       for (const [mint, quote] of batch) quotes.set(mint, quote);
     }
-    for (const position of positions) {
+    for (const position of activePositions) {
       const quote = quotes.get(position.tokenMint);
       if (!quote?.priceUsd || quote.priceUsd <= 0) continue;
       const entryPrice = Number(position.copyPriceUsd);
