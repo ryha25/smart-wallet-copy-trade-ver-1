@@ -61454,7 +61454,6 @@ function evaluateCopySignal(signal, settings, state) {
 // src/services/live-trading.ts
 var import_web3 = __toESM(require_index_cjs(), 1);
 var USDC_MINT2 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-var SOL_MINT = "So11111111111111111111111111111111111111112";
 var JUPITER_SWAP_URL = "https://api.jup.ag/swap/v2";
 var BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 function decodeBase58(value) {
@@ -61517,10 +61516,6 @@ async function readJson(response, operation) {
   }
   if (!response.ok) throw new Error(`${operation}\u5931\u6557 (HTTP ${response.status}): ${body.errorMessage ?? body.error ?? raw.slice(0, 300)}`);
   return body;
-}
-async function getLiveSolBalance() {
-  const wallet = loadTradingWallet();
-  return getConnection().getBalance(wallet.publicKey);
 }
 async function getLiveTradingStatus() {
   const environmentEnabled = process.env.LIVE_TRADING_ENABLED === "true";
@@ -61623,12 +61618,6 @@ async function executeLiveSwap(input) {
 
 // src/services/copy-monitor.ts
 init_solana_live();
-async function getSolPriceUsd() {
-  const quotes = await getTokenQuotes([SOL_MINT]);
-  const sol = quotes.get(SOL_MINT);
-  if (!sol?.priceUsd || sol.priceUsd <= 0) throw new Error("SOL\u4FA1\u683C\u3092\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093");
-  return sol.priceUsd;
-}
 var runtimeRoot3 = globalThis;
 var runtime2 = runtimeRoot3.nextTradeCopyMonitor ?? {
   running: false,
@@ -61863,30 +61852,20 @@ async function processBuy(userId, wallet, event, settings) {
   let buySignature = null;
   if (settings.liveTradingEnabled) {
     try {
-      const solPriceUsd = await getSolPriceUsd();
-      const inputLamports = Math.max(1, Math.round(settings.amountPerTrade / solPriceUsd * 1e9));
-      const FEE_BUFFER_LAMPORTS = 1e7;
-      const solBalance = await getLiveSolBalance();
-      if (solBalance < inputLamports + FEE_BUFFER_LAMPORTS) {
-        const balanceSol = (solBalance / 1e9).toFixed(4);
-        const neededSol = ((inputLamports + FEE_BUFFER_LAMPORTS) / 1e9).toFixed(4);
-        await skipTrade(userId, wallet.id, event, `SOL\u6B8B\u9AD8\u4E0D\u8DB3 (\u6B8B: ${balanceSol} SOL, \u5FC5\u8981: ${neededSol} SOL)`);
-        return;
-      }
       tokenDecimals = await getMintDecimals(event.mint);
       const swap = await executeLiveSwap({
         idempotencyKey: `BUY:${wallet.id}:${event.signature}:${event.mint}`,
         userId,
         sourceWalletId: wallet.id,
         side: "BUY",
-        inputMint: SOL_MINT,
+        inputMint: USDC_MINT2,
         outputMint: event.mint,
-        inputAmount: String(inputLamports),
+        inputAmount: String(Math.round(settings.amountPerTrade * 1e6)),
         maxSlippagePercent: settings.maxSlippage
       });
       rawTokenAmount = swap.outputAmount;
       quantity = Number(swap.outputAmount) / 10 ** tokenDecimals;
-      amountUsd = Number(swap.inputAmount) / 1e9 * solPriceUsd;
+      amountUsd = Number(swap.inputAmount) / 1e6;
       if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Jupiter\u306E\u53D7\u53D6\u6570\u91CF\u304C\u4E0D\u6B63\u3067\u3059");
       copyPriceUsd = amountUsd / quantity;
       executionMode = "LIVE";
@@ -61983,12 +61962,11 @@ async function settlePositionById(positionId, settlementReason, quotedExitPrice)
         paperPositionId: position.id,
         side: "SELL",
         inputMint: position.tokenMint,
-        outputMint: SOL_MINT,
+        outputMint: USDC_MINT2,
         inputAmount: position.rawTokenAmount,
         maxSlippagePercent: settings.maxSlippage
       });
-      const solPriceUsd = await getSolPriceUsd().catch(() => 0);
-      const proceedsUsd = solPriceUsd > 0 ? Number(swap.outputAmount) / 1e9 * solPriceUsd : (quotedExitPrice ?? 0) * Number(position.quantity);
+      const proceedsUsd = Number(swap.outputAmount) > 0 ? Number(swap.outputAmount) / 1e6 : (quotedExitPrice ?? 0) * Number(position.quantity);
       exitPrice = proceedsUsd / Number(position.quantity);
       pnlUsd = proceedsUsd - Number(position.amountUsd);
       sellSignature = swap.signature;
