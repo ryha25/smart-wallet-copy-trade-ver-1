@@ -1272,11 +1272,10 @@ export function TradingApp() {
         setLiveStatus(tradingStatus);
         setSettingsLoaded(true);
         const serverTrades = await requestJson<{ positions: LivePaperPosition[]; skipped: SkippedPaperTrade[] }>("/api/live/copy-monitor", 30_000, { method: "PUT" });
-        setPositions(current => serverTrades.positions.length ? serverTrades.positions.map(position => {
-          const existing = current.find(item => item.id === position.id);
-          return existing && position.status === "OPEN" ? { ...position, currentPriceUsd: existing.currentPriceUsd } : position;
-        }) : current);
-        setSkipped(current => serverTrades.skipped.length ? serverTrades.skipped : current);
+        // The database is authoritative after login. Keeping local data when the
+        // server returns an empty array resurrects positions that were already sold.
+        setPositions(serverTrades.positions);
+        setSkipped(serverTrades.skipped);
       } catch (syncError) {
         setError(syncError instanceof Error ? syncError.message : "DB保存データの同期に失敗しました");
       }
