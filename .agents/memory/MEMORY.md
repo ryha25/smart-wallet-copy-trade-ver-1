@@ -1,1 +1,2 @@
 - [Artifact recovery](artifact-recovery.md) — when platform removes artifact registration but files exist, use verifyAndReplaceArtifactToml to re-register without recreating.
+- [SOL-based live swaps](sol-mint-swap.md) — all Jupiter swaps use SOL not USDC; pump.fun tokens have no USDC pairs.

@@ -9,10 +9,17 @@ import {
   getLiveTokenRawBalance,
   getLiveTradingStatus,
   getMintDecimals,
-  USDC_MINT,
+  SOL_MINT,
 } from "./live-trading";
 import { getLiveWalletActivity, getTokenQuotes, getTokenRisk } from "./solana-live";
 import { sendTradeNotification } from "../lib/push-notify";
+
+async function getSolPriceUsd(): Promise<number> {
+  const quotes = await getTokenQuotes([SOL_MINT]);
+  const sol = quotes.get(SOL_MINT);
+  if (!sol?.priceUsd || sol.priceUsd <= 0) throw new Error("SOL価格を取得できません");
+  return sol.priceUsd;
+}
 
 type MonitorRuntime = {
   running: boolean;
@@ -395,20 +402,21 @@ async function processBuy(
           return;
         }
       }
+      const solPriceUsd = await getSolPriceUsd();
       tokenDecimals = await getMintDecimals(event.mint);
       const swap = await executeLiveSwap({
         idempotencyKey: `BUY:${wallet.id}:${event.signature}:${event.mint}`,
         userId,
         sourceWalletId: wallet.id,
         side: "BUY",
-        inputMint: USDC_MINT,
+        inputMint: SOL_MINT,
         outputMint: event.mint,
-        inputAmount: String(Math.max(1, Math.round(settings.amountPerTrade * 1_000_000))),
+        inputAmount: String(Math.max(1, Math.round((settings.amountPerTrade / solPriceUsd) * 1e9))),
         maxSlippagePercent: settings.maxSlippage,
       });
       rawTokenAmount = swap.outputAmount;
       quantity = Number(swap.outputAmount) / 10 ** tokenDecimals;
-      amountUsd = Number(swap.inputAmount) / 1_000_000;
+      amountUsd = Number(swap.inputAmount) / 1e9 * solPriceUsd;
       if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Jupiterの受取数量が不正です");
       copyPriceUsd = amountUsd / quantity;
       executionMode = "LIVE";
@@ -563,11 +571,14 @@ export async function settlePositionById(
         paperPositionId: position.id,
         side: "SELL",
         inputMint: position.tokenMint,
-        outputMint: USDC_MINT,
+        outputMint: SOL_MINT,
         inputAmount: position.rawTokenAmount,
         maxSlippagePercent: settings.maxSlippage,
       });
-      const proceedsUsd = Number(swap.outputAmount) / 1_000_000;
+      const solPriceUsd = await getSolPriceUsd().catch(() => 0);
+      const proceedsUsd = solPriceUsd > 0
+        ? Number(swap.outputAmount) / 1e9 * solPriceUsd
+        : (quotedExitPrice ?? 0) * Number(position.quantity);
       const quantity = Number(position.quantity);
       exitPrice = proceedsUsd / quantity;
       pnlUsd = proceedsUsd - Number(position.amountUsd);
@@ -728,11 +739,14 @@ export async function partialSettlePositionById(
       paperPositionId: position.id,
       side: "SELL",
       inputMint: position.tokenMint,
-      outputMint: USDC_MINT,
+      outputMint: SOL_MINT,
       inputAmount: soldRaw.toString(),
       maxSlippagePercent: settings.maxSlippage,
     });
-    partialProceeds = Number(swap.outputAmount) / 1_000_000;
+    const solPriceUsdPartial = await getSolPriceUsd().catch(() => 0);
+    partialProceeds = solPriceUsdPartial > 0
+      ? Number(swap.outputAmount) / 1e9 * solPriceUsdPartial
+      : Number(soldRaw) / Number(BigInt(position.rawTokenAmount)) * Number(position.amountUsd);
     const remainingRaw = totalRaw - soldRaw;
     await prisma.paperPosition.update({
       where: { id: position.id },
@@ -791,14 +805,15 @@ async function executeLimitBuy(
       userId,
       sourceWalletId: systemWalletId,
       side: "BUY",
-      inputMint: USDC_MINT,
+      inputMint: SOL_MINT,
       outputMint: order.tokenMint,
-      inputAmount: String(Math.max(1, Math.round(amountToSpend * 1_000_000))),
+      inputAmount: String(Math.max(1, Math.round((amountToSpend / (await getSolPriceUsd())) * 1e9))),
       maxSlippagePercent: settings.maxSlippage,
     });
     rawTokenAmount = swap.outputAmount;
     quantity = Number(swap.outputAmount) / 10 ** tokenDecimals;
-    amountUsd = Number(swap.inputAmount) / 1_000_000;
+    const solPriceUsdLimit = await getSolPriceUsd().catch(() => 0);
+    amountUsd = solPriceUsdLimit > 0 ? Number(swap.inputAmount) / 1e9 * solPriceUsdLimit : amountToSpend;
     if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Jupiterの受取数量が不正です");
     copyPriceUsd = amountUsd / quantity;
     executionMode = "LIVE";

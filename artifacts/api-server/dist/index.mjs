@@ -59792,7 +59792,7 @@ __export(solana_live_exports, {
   analyzeWallet: () => analyzeWallet,
   getJupiterPaperQuote: () => getJupiterPaperQuote,
   getLiveWalletActivity: () => getLiveWalletActivity,
-  getTokenQuotes: () => getTokenQuotes2,
+  getTokenQuotes: () => getTokenQuotes,
   getTokenRisk: () => getTokenRisk,
   scanProfitableWallets: () => scanProfitableWallets,
   scanWalletsForToken: () => scanWalletsForToken
@@ -59969,7 +59969,7 @@ function valueSwaps(swaps, solHistory, currentSolPrice, quotes) {
     };
   });
 }
-async function getTokenQuotes2(mints) {
+async function getTokenQuotes(mints) {
   const unique = [...new Set(mints)].filter(Boolean).slice(0, 30);
   if (!unique.length) return /* @__PURE__ */ new Map();
   const dexScreenerUrl = `https://api.dexscreener.com/tokens/v1/solana/${unique.map(encodeURIComponent).join(",")}`;
@@ -60092,7 +60092,7 @@ async function getLiveWalletActivity(address) {
     (tx) => swapsFromTransaction(tx, address, tx.transaction.signatures?.[0] ?? crypto.randomUUID())
   );
   const quoteMints = [.../* @__PURE__ */ new Set([...raw.map((item) => item.mint), WRAPPED_SOL_MINT])];
-  const quotes = await getTokenQuotes2(quoteMints).catch(() => /* @__PURE__ */ new Map());
+  const quotes = await getTokenQuotes(quoteMints).catch(() => /* @__PURE__ */ new Map());
   const now = Math.floor(Date.now() / 1e3);
   const oldest = Math.min(...raw.map((item) => item.blockTime).filter(Boolean), now);
   const history = raw.some((item) => item.quoteKind === "SOL") ? await solPriceHistory(oldest, now).catch(() => []) : [];
@@ -60270,11 +60270,11 @@ async function analyzeWalletWithEvents(address, historyPages = 1) {
   const needsSol = raw.some((item) => item.quoteKind === "SOL");
   const [solHistory, quotes] = await Promise.all([
     needsSol ? solPriceHistory(since, now).catch(() => []) : Promise.resolve([]),
-    getTokenQuotes2(needsSol ? [WRAPPED_SOL_MINT] : []).catch(() => /* @__PURE__ */ new Map())
+    getTokenQuotes(needsSol ? [WRAPPED_SOL_MINT] : []).catch(() => /* @__PURE__ */ new Map())
   ]);
   const baseEvents = valueSwaps(raw, solHistory, quotes.get(WRAPPED_SOL_MINT)?.priceUsd ?? null, /* @__PURE__ */ new Map());
   const openMints = [...portfolioLots(baseEvents).lots.entries()].filter(([, lots]) => lots.some((lot) => lot.quantity > 1e-12)).map(([mint]) => mint).slice(0, 30);
-  const currentQuotes = await getTokenQuotes2(openMints).catch(() => /* @__PURE__ */ new Map());
+  const currentQuotes = await getTokenQuotes(openMints).catch(() => /* @__PURE__ */ new Map());
   const events = baseEvents.map((event) => ({ ...event, current: currentQuotes.get(event.mint) ?? null }));
   const firstTime = first.data[0]?.blockTime ?? now;
   const ageDays = Math.max(0, Math.floor((now - firstTime) / 86400));
@@ -61454,6 +61454,7 @@ function evaluateCopySignal(signal, settings, state) {
 // src/services/live-trading.ts
 var import_web3 = __toESM(require_index_cjs(), 1);
 var USDC_MINT2 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+var SOL_MINT = "So11111111111111111111111111111111111111112";
 var JUPITER_SWAP_URL = "https://api.jup.ag/swap/v2";
 var BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 function decodeBase58(value) {
@@ -61618,6 +61619,12 @@ async function executeLiveSwap(input) {
 
 // src/services/copy-monitor.ts
 init_solana_live();
+async function getSolPriceUsd() {
+  const quotes = await getTokenQuotes([SOL_MINT]);
+  const sol = quotes.get(SOL_MINT);
+  if (!sol?.priceUsd || sol.priceUsd <= 0) throw new Error("SOL\u4FA1\u683C\u3092\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093");
+  return sol.priceUsd;
+}
 var runtimeRoot3 = globalThis;
 var runtime2 = runtimeRoot3.nextTradeCopyMonitor ?? {
   running: false,
@@ -61852,20 +61859,21 @@ async function processBuy(userId, wallet, event, settings) {
   let buySignature = null;
   if (settings.liveTradingEnabled) {
     try {
+      const solPriceUsd = await getSolPriceUsd();
       tokenDecimals = await getMintDecimals(event.mint);
       const swap = await executeLiveSwap({
         idempotencyKey: `BUY:${wallet.id}:${event.signature}:${event.mint}`,
         userId,
         sourceWalletId: wallet.id,
         side: "BUY",
-        inputMint: USDC_MINT2,
+        inputMint: SOL_MINT,
         outputMint: event.mint,
-        inputAmount: String(Math.max(1, Math.round(settings.amountPerTrade * 1e6))),
+        inputAmount: String(Math.max(1, Math.round(settings.amountPerTrade / solPriceUsd * 1e9))),
         maxSlippagePercent: settings.maxSlippage
       });
       rawTokenAmount = swap.outputAmount;
       quantity = Number(swap.outputAmount) / 10 ** tokenDecimals;
-      amountUsd = Number(swap.inputAmount) / 1e6;
+      amountUsd = Number(swap.inputAmount) / 1e9 * solPriceUsd;
       if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Jupiter\u306E\u53D7\u53D6\u6570\u91CF\u304C\u4E0D\u6B63\u3067\u3059");
       copyPriceUsd = amountUsd / quantity;
       executionMode = "LIVE";
@@ -61924,8 +61932,8 @@ async function forceClosePositionById(positionId) {
   if (position.status !== "OPEN") return position;
   let exitPrice = Number(position.copyPriceUsd);
   try {
-    const { getTokenQuotes: getTokenQuotes3 } = await Promise.resolve().then(() => (init_solana_live(), solana_live_exports));
-    const quotes = await getTokenQuotes3([position.tokenMint], { verbose: false });
+    const { getTokenQuotes: getTokenQuotes2 } = await Promise.resolve().then(() => (init_solana_live(), solana_live_exports));
+    const quotes = await getTokenQuotes2([position.tokenMint], { verbose: false });
     const q = quotes.get(position.tokenMint);
     if (q?.priceUsd && q.priceUsd > 0) exitPrice = q.priceUsd;
   } catch {
@@ -61962,11 +61970,12 @@ async function settlePositionById(positionId, settlementReason, quotedExitPrice)
         paperPositionId: position.id,
         side: "SELL",
         inputMint: position.tokenMint,
-        outputMint: USDC_MINT2,
+        outputMint: SOL_MINT,
         inputAmount: position.rawTokenAmount,
         maxSlippagePercent: settings.maxSlippage
       });
-      const proceedsUsd = Number(swap.outputAmount) / 1e6;
+      const solPriceUsd = await getSolPriceUsd().catch(() => 0);
+      const proceedsUsd = solPriceUsd > 0 ? Number(swap.outputAmount) / 1e9 * solPriceUsd : (quotedExitPrice ?? 0) * Number(position.quantity);
       exitPrice = proceedsUsd / Number(position.quantity);
       pnlUsd = proceedsUsd - Number(position.amountUsd);
       sellSignature = swap.signature;
@@ -62305,7 +62314,7 @@ router2.get("/token", async (request, response) => {
     } catch (publicKeyError) {
       throw new Error(`CA\u3092PublicKey\u3068\u3057\u3066\u89E3\u6790\u3067\u304D\u307E\u305B\u3093: ${mint}`, { cause: publicKeyError });
     }
-    const quote = (await getTokenQuotes2([mint])).get(mint);
+    const quote = (await getTokenQuotes([mint])).get(mint);
     if (!quote) {
       response.status(404).json({
         error: "DexScreener\u3067\u53D6\u5F15\u30DA\u30A2\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093",
@@ -62548,7 +62557,7 @@ router2.put("/copy-monitor", async (_request, response) => {
       prisma.skippedTrade.findMany({ include: { sourceWallet: true }, orderBy: { detectedAt: "desc" }, take: 500 })
     ]);
     const openMints = positions.filter((p) => p.status === "OPEN").map((p) => p.tokenMint);
-    const quotes = await getTokenQuotes2(openMints, { verbose: false }).catch(() => /* @__PURE__ */ new Map());
+    const quotes = await getTokenQuotes(openMints, { verbose: false }).catch(() => /* @__PURE__ */ new Map());
     const todayKey = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Asia/Tokyo",
       year: "numeric",

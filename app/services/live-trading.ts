@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma";
 import type { LiveTradingStatus } from "../lib/types";
 
 export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+export const SOL_MINT = "So11111111111111111111111111111111111111112";
 const JUPITER_SWAP_URL = "https://api.jup.ag/swap/v2";
 const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 

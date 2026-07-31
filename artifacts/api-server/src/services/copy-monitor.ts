@@ -9,9 +9,16 @@ import {
   getLiveTokenRawBalance,
   getLiveTradingStatus,
   getMintDecimals,
-  USDC_MINT,
+  SOL_MINT,
 } from "./live-trading";
-import { getLiveWalletActivity, getTokenRisk } from "./solana-live";
+import { getLiveWalletActivity, getTokenQuotes, getTokenRisk } from "./solana-live";
+
+async function getSolPriceUsd(): Promise<number> {
+  const quotes = await getTokenQuotes([SOL_MINT]);
+  const sol = quotes.get(SOL_MINT);
+  if (!sol?.priceUsd || sol.priceUsd <= 0) throw new Error("SOL価格を取得できません");
+  return sol.priceUsd;
+}
 
 type MonitorRuntime = {
   running: boolean;
@@ -310,16 +317,17 @@ async function processBuy(
   let buySignature: string | null = null;
   if (settings.liveTradingEnabled) {
     try {
+      const solPriceUsd = await getSolPriceUsd();
       tokenDecimals = await getMintDecimals(event.mint);
       const swap = await executeLiveSwap({
         idempotencyKey: `BUY:${wallet.id}:${event.signature}:${event.mint}`,
-        userId, sourceWalletId: wallet.id, side: "BUY", inputMint: USDC_MINT, outputMint: event.mint,
-        inputAmount: String(Math.max(1, Math.round(settings.amountPerTrade * 1_000_000))),
+        userId, sourceWalletId: wallet.id, side: "BUY", inputMint: SOL_MINT, outputMint: event.mint,
+        inputAmount: String(Math.max(1, Math.round((settings.amountPerTrade / solPriceUsd) * 1e9))),
         maxSlippagePercent: settings.maxSlippage,
       });
       rawTokenAmount = swap.outputAmount;
       quantity = Number(swap.outputAmount) / 10 ** tokenDecimals;
-      amountUsd = Number(swap.inputAmount) / 1_000_000;
+      amountUsd = Number(swap.inputAmount) / 1e9 * solPriceUsd;
       if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Jupiterの受取数量が不正です");
       copyPriceUsd = amountUsd / quantity;
       executionMode = "LIVE";
@@ -413,10 +421,13 @@ export async function settlePositionById(
     try {
       const swap = await executeLiveSwap({
         idempotencyKey: `SELL:${position.id}`, userId: position.userId, sourceWalletId: position.sourceWalletId,
-        paperPositionId: position.id, side: "SELL", inputMint: position.tokenMint, outputMint: USDC_MINT,
+        paperPositionId: position.id, side: "SELL", inputMint: position.tokenMint, outputMint: SOL_MINT,
         inputAmount: position.rawTokenAmount, maxSlippagePercent: settings.maxSlippage,
       });
-      const proceedsUsd = Number(swap.outputAmount) / 1_000_000;
+      const solPriceUsd = await getSolPriceUsd().catch(() => 0);
+      const proceedsUsd = solPriceUsd > 0
+        ? Number(swap.outputAmount) / 1e9 * solPriceUsd
+        : (quotedExitPrice ?? 0) * Number(position.quantity);
       exitPrice = proceedsUsd / Number(position.quantity);
       pnlUsd = proceedsUsd - Number(position.amountUsd);
       sellSignature = swap.signature;
@@ -681,8 +692,9 @@ async function reconcileLivePositionBalances(
           },
           orderBy: { updatedAt: "desc" },
         });
-        const proceedsUsd = successfulSell?.outputAmount
-          ? Number(successfulSell.outputAmount) / 1_000_000
+        const solPriceUsd = await getSolPriceUsd().catch(() => 0);
+        const proceedsUsd = successfulSell?.outputAmount && solPriceUsd > 0
+          ? Number(successfulSell.outputAmount) / 1e9 * solPriceUsd
           : null;
         const quantity = Number(position.quantity);
         const amountUsd = Number(position.amountUsd);
