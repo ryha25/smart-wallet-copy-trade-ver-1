@@ -25,6 +25,8 @@ enum SettlementReason {
   MANUAL
   MAX_HOLDING_TIME
   RISK_DETECTED
+  LIMIT_SELL
+  FORCE_CLOSED
 }
 
 enum RiskLevel {

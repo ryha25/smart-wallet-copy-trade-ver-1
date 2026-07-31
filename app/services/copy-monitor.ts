@@ -106,6 +106,7 @@ function dbSettingsToClient(settings: {
     maxDetectionSeconds: settings.maxDetectionSeconds,
     maxPriceRiseEnabled: settings.maxPriceRiseEnabled,
     maxPriceRise: Number(settings.maxPriceRisePercent),
+    maxWallets: settings.maxWallets ?? 30,
   };
 }
 

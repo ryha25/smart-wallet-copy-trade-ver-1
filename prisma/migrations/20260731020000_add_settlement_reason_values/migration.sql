@@ -1,0 +1,3 @@
+-- Add LIMIT_SELL and FORCE_CLOSED to SettlementReason enum
+ALTER TYPE "SettlementReason" ADD VALUE IF NOT EXISTS 'LIMIT_SELL';
+ALTER TYPE "SettlementReason" ADD VALUE IF NOT EXISTS 'FORCE_CLOSED';
