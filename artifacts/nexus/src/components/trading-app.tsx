@@ -1290,8 +1290,9 @@ function MobileActivityView({
   };
   const filteredPositions = positions.filter(position =>
     historyMode === "ALL" || (position.executionMode ?? "PAPER") === historyMode);
+  // UNKNOWN = skipped before live/paper decision → show in all modes
   const filteredSkipped = skipped.filter(item =>
-    historyMode === "ALL" || item.executionMode === historyMode);
+    historyMode === "ALL" || !item.executionMode || item.executionMode === "UNKNOWN" || item.executionMode === historyMode);
   const sourceCount = Object.values(activities).reduce((sum, activity) => sum + activity.events.length, 0);
   const needsEvents = openPanels.source || openPanels.recent;
   const events = useMemo(() => needsEvents
