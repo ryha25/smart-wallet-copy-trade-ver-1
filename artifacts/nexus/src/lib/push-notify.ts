@@ -110,7 +110,8 @@ export async function sendTradeNotification(
     const res = await fetch(`${NTFY_BASE}/${NTFY_TOPIC}`, {
       method: "POST",
       headers,
-      body: cfg.body,
+      // Node.js built-in fetch requires body to be a Buffer for non-ASCII text
+      body: Buffer.from(cfg.body, "utf-8"),
     });
     if (!res.ok) {
       console.warn("[NEXT-TRADE][push-notify]", `ntfy returned ${res.status}`);
