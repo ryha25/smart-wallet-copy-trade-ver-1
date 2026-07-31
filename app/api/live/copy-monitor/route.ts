@@ -6,6 +6,7 @@ import {
   installCopyMonitor,
   runCopyMonitorCycle,
   settlePositionById,
+  partialSettlePositionById,
   getLiveDailyLoss,
 } from "../../../services/copy-monitor";
 import { getTokenQuotes } from "../../../services/solana-live";
@@ -151,9 +152,11 @@ export async function PATCH(request: Request) {
     const unauthorized = await requireAppSession(request);
     if (unauthorized) return unauthorized;
     if (!prisma) throw new Error("DATABASE_URLが未設定です");
-    const body = await request.json() as { id?: string; exitPriceUsd?: number };
+    const body = await request.json() as { id?: string; exitPriceUsd?: number; sellPercent?: number };
     if (!body.id) throw new Error("決済対象を確認してください");
-    const updated = await settlePositionById(body.id, "MANUAL", body.exitPriceUsd);
+    const updated = body.sellPercent != null && body.sellPercent < 100
+      ? await partialSettlePositionById(body.id, body.sellPercent, body.exitPriceUsd)
+      : await settlePositionById(body.id, "MANUAL", body.exitPriceUsd);
     return Response.json({ id: updated.id, status: updated.status }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     return Response.json(apiError(error, "copy-monitor.settle"), { status: 400 });

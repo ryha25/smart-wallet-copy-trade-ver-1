@@ -6,6 +6,7 @@ export const defaultSettings: CopySettings = {
   amountPerTrade: 250,
   maxPositions: 8,
   maxDailyAmount: 1500,
+  maxWallets: 30,
   dailyLossLimitEnabled: false,
   dailyLossLimit: 3,
   dailyLossIncludeUnrealized: false,

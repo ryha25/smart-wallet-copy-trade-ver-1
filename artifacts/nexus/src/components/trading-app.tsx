@@ -33,7 +33,7 @@ import type {
   WalletScanState,
   WalletScore,
 } from "../lib/live-types";
-import type { CopySettings, LiveTradingStatus, TradeModeFilter } from "../lib/types";
+import type { CopySettings, LimitOrder, LiveTradingStatus, TradeModeFilter } from "../lib/types";
 
 type View = "dashboard" | "sources" | "scanner" | "favorites" | "activity" | "settings";
 type ActivityByWallet = Record<string, LiveWalletResponse>;
@@ -253,7 +253,10 @@ function Dashboard({
   lastRefresh,
   liveMode,
   liveStatus,
+  limitOrders,
   onClose,
+  onCreateLimitOrder,
+  onCancelLimitOrder,
 }: {
   wallets: TrackedWallet[];
   positions: LivePaperPosition[];
@@ -262,16 +265,33 @@ function Dashboard({
   lastRefresh: string | null;
   liveMode: boolean;
   liveStatus: LiveTradingStatus | null;
-  onClose: (position: LivePaperPosition, reason: string) => void;
+  limitOrders: LimitOrder[];
+  onClose: (position: LivePaperPosition, reason: string, exitPrice?: number, sellPercent?: number) => void;
+  onCreateLimitOrder: (body: { tokenMint: string; tokenSymbol: string; side: "BUY" | "SELL"; targetPriceUsd: number; amountUsd?: number; sellPercent?: number; positionId?: string }) => Promise<void>;
+  onCancelLimitOrder: (id: string) => Promise<void>;
 }) {
   const [performanceMode, setPerformanceMode] = useState<"LIVE" | "PAPER">("LIVE");
   const [valueDisplay, setValueDisplay] = useState<"PRICE" | "MC">("PRICE");
+  // 指値パネル: positionId → { limitTargetPrice, limitSellPct, sellPct, submitting }
+  const [expandedPos, setExpandedPos] = useState<string | null>(null);
+  const [limitTargetPrice, setLimitTargetPrice] = useState("");
+  const [limitSellPct, setLimitSellPct] = useState("100");
+  const [immediatePercent, setImmediatePercent] = useState("100");
+  const [panelBusy, setPanelBusy] = useState(false);
+  const [panelMsg, setPanelMsg] = useState<string | null>(null);
   useEffect(() => {
     const savedMode = localStorage.getItem(STORAGE.performanceMode);
     const savedDisplay = localStorage.getItem(STORAGE.valueDisplay);
     if (savedMode === "LIVE" || savedMode === "PAPER") setPerformanceMode(savedMode);
     if (savedDisplay === "PRICE" || savedDisplay === "MC") setValueDisplay(savedDisplay);
   }, []);
+  const openPanel = (posId: string) => {
+    setExpandedPos(current => current === posId ? null : posId);
+    setLimitTargetPrice("");
+    setLimitSellPct("100");
+    setImmediatePercent("100");
+    setPanelMsg(null);
+  };
   const selectPerformanceMode = (mode: "LIVE" | "PAPER") => {
     setPerformanceMode(mode);
     localStorage.setItem(STORAGE.performanceMode, mode);
@@ -342,32 +362,122 @@ function Dashboard({
             <div className="divide-y divide-white/[0.07]">
               {open.map(position => {
                 const pnl = calculatePaperPnl(position.copyPriceUsd, position.currentPriceUsd, position.amountUsd);
+                const isExpanded = expandedPos === position.id;
+                const posLimitOrders = limitOrders.filter(o => o.side === "SELL" && o.status === "PENDING" && (o.positionId === position.id || o.tokenMint === position.mint));
                 return (
-                  <div key={position.id} className="flex items-center gap-3 px-5 py-4">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#172227] text-xs font-bold text-[#38e7ae]">{position.symbol[0]}</div>
-                    <div className="min-w-0 flex-1">
-                      <p className="font-semibold">{position.symbol}</p>
-                      <p className="truncate font-mono text-[10px] text-[#66767c]">{shortAddress(position.wallet)}・{position.executionMode === "LIVE" ? "LIVE" : "PAPER"}</p>
-                      <p className="mt-1 text-[10px] text-[#718188]">{valueDisplay === "PRICE" ? `購入 ${tokenPrice(position.copyPriceUsd)} / 現在 ${tokenPrice(position.currentPriceUsd)}` : `購入時MC ${compactMoney(position.entryMarketCapUsd)} / 現在MC ${compactMoney(position.currentMarketCapUsd)}`}</p>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end">
-                      <div className={`text-right tabular-nums ${pnl.pnlUsd >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>
-                        <p className="text-sm font-semibold">{money(pnl.pnlUsd, true)}</p>
-                        <p className="text-xs">{pct(pnl.pnlPct)}</p>
+                  <div key={position.id} className="border-b border-white/[0.07] last:border-b-0">
+                    <div className="flex items-center gap-3 px-5 py-4">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#172227] text-xs font-bold text-[#38e7ae]">{position.symbol[0]}</div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold">{position.symbol}</p>
+                        <p className="truncate font-mono text-[10px] text-[#66767c]">{shortAddress(position.wallet)}・{position.executionMode === "LIVE" ? "LIVE" : "PAPER"}</p>
+                        <p className="mt-1 text-[10px] text-[#718188]">{valueDisplay === "PRICE" ? `購入 ${tokenPrice(position.copyPriceUsd)} / 現在 ${tokenPrice(position.currentPriceUsd)}` : `購入時MC ${compactMoney(position.entryMarketCapUsd)} / 現在MC ${compactMoney(position.currentMarketCapUsd)}`}</p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (window.confirm(`${position.symbol}を現在価格で手動決済しますか？`)) {
-                            onClose(position, "手動決済");
-                          }
-                        }}
-                        className="mt-2 min-h-9 rounded-lg border border-rose-400/25 bg-rose-400/[0.08] px-3 text-xs font-semibold text-rose-300 transition hover:bg-rose-400/[0.14]"
-                        aria-label={`${position.symbol}を手動決済`}
-                      >
-                        手動決済
-                      </button>
+                      <div className="flex shrink-0 flex-col items-end">
+                        <div className={`text-right tabular-nums ${pnl.pnlUsd >= 0 ? "text-[#38e7ae]" : "text-rose-300"}`}>
+                          <p className="text-sm font-semibold">{money(pnl.pnlUsd, true)}</p>
+                          <p className="text-xs">{pct(pnl.pnlPct)}</p>
+                        </div>
+                        <div className="mt-2 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openPanel(position.id)}
+                            className={`min-h-9 rounded-lg border px-3 text-xs font-semibold transition ${isExpanded ? "border-[#38e7ae]/30 bg-[#38e7ae]/10 text-[#38e7ae]" : "border-white/10 bg-white/[0.04] text-[#a0b0b6] hover:border-[#38e7ae]/30 hover:text-[#38e7ae]"}`}
+                          >
+                            売却
+                          </button>
+                        </div>
+                      </div>
                     </div>
+                    {isExpanded && (
+                      <div className="border-t border-white/[0.07] bg-[#0a0f11] px-5 py-4">
+                        {panelMsg && <p className="mb-3 text-xs text-amber-300">{panelMsg}</p>}
+                        {/* 今すぐ部分売り */}
+                        <p className="mb-2 text-[11px] font-semibold text-[#a0b0b6]">今すぐ売る（現在価格）</p>
+                        <div className="flex flex-wrap items-end gap-3">
+                          <div className="w-28">
+                            <p className="mb-1 text-[10px] text-[#7f9097]">売却割合 %</p>
+                            <input
+                              type="number" min={1} max={100} step={1}
+                              value={immediatePercent}
+                              onChange={e => setImmediatePercent(e.target.value)}
+                              className="w-full rounded-lg border border-white/10 bg-[#141b1e] px-3 py-2 text-xs text-white focus:border-[#38e7ae]/50 focus:outline-none"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            disabled={panelBusy}
+                            onClick={() => {
+                              const pct2 = Number(immediatePercent);
+                              if (!pct2 || pct2 < 1 || pct2 > 100) { setPanelMsg("1〜100の整数で入力してください"); return; }
+                              if (!window.confirm(`${position.symbol}を現在価格で${pct2 < 100 ? `${pct2}%` : "全額"}売却しますか？`)) return;
+                              setPanelBusy(true); setPanelMsg(null);
+                              onClose(position, "手動決済", position.currentPriceUsd, pct2);
+                              window.setTimeout(() => { setPanelBusy(false); if (pct2 >= 100) setExpandedPos(null); }, 1000);
+                            }}
+                            className="min-h-9 rounded-lg border border-rose-400/25 bg-rose-400/[0.08] px-4 text-xs font-semibold text-rose-300 hover:bg-rose-400/[0.14] disabled:opacity-50"
+                          >
+                            {panelBusy ? "処理中…" : `今すぐ${Number(immediatePercent) < 100 ? `${immediatePercent}%` : "全額"}売る`}
+                          </button>
+                        </div>
+                        {/* 指値売り注文 */}
+                        <p className="mb-2 mt-5 text-[11px] font-semibold text-[#a0b0b6]">指値売り注文（価格到達で自動実行）</p>
+                        <div className="flex flex-wrap items-end gap-3">
+                          <div className="w-36">
+                            <p className="mb-1 text-[10px] text-[#7f9097]">目標価格 USDC</p>
+                            <input
+                              type="number" min={0} step="any"
+                              value={limitTargetPrice}
+                              onChange={e => setLimitTargetPrice(e.target.value)}
+                              placeholder={tokenPrice(position.currentPriceUsd).replace("$", "")}
+                              className="w-full rounded-lg border border-white/10 bg-[#141b1e] px-3 py-2 text-xs text-white focus:border-[#38e7ae]/50 focus:outline-none"
+                            />
+                          </div>
+                          <div className="w-28">
+                            <p className="mb-1 text-[10px] text-[#7f9097]">売却割合 %</p>
+                            <input
+                              type="number" min={1} max={100} step={1}
+                              value={limitSellPct}
+                              onChange={e => setLimitSellPct(e.target.value)}
+                              className="w-full rounded-lg border border-white/10 bg-[#141b1e] px-3 py-2 text-xs text-white focus:border-[#38e7ae]/50 focus:outline-none"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            disabled={panelBusy}
+                            onClick={async () => {
+                              const price = Number(limitTargetPrice);
+                              const pct2 = Number(limitSellPct);
+                              if (!price || price <= 0) { setPanelMsg("目標価格を入力してください"); return; }
+                              if (!pct2 || pct2 < 1 || pct2 > 100) { setPanelMsg("売却割合は1〜100で入力してください"); return; }
+                              setPanelBusy(true); setPanelMsg(null);
+                              try {
+                                await onCreateLimitOrder({ tokenMint: position.mint, tokenSymbol: position.symbol, side: "SELL", targetPriceUsd: price, sellPercent: pct2, positionId: position.id });
+                                setPanelMsg(`指値売り設定: ${tokenPrice(price)} で ${pct2}% 売却`);
+                                setLimitTargetPrice(""); setLimitSellPct("100");
+                              } catch (e) { setPanelMsg(e instanceof Error ? e.message : "指値注文の設定に失敗しました"); }
+                              finally { setPanelBusy(false); }
+                            }}
+                            className="min-h-9 rounded-lg border border-[#38e7ae]/25 bg-[#38e7ae]/[0.08] px-4 text-xs font-semibold text-[#38e7ae] hover:bg-[#38e7ae]/[0.14] disabled:opacity-50"
+                          >
+                            指値設定
+                          </button>
+                        </div>
+                        {posLimitOrders.length > 0 && (
+                          <div className="mt-4">
+                            <p className="mb-2 text-[10px] text-[#7f9097]">未執行の指値売り注文</p>
+                            <div className="flex flex-col gap-2">
+                              {posLimitOrders.map(order => (
+                                <div key={order.id} className="flex items-center justify-between rounded-lg border border-white/[0.07] bg-[#141b1e] px-3 py-2 text-[10px]">
+                                  <span className="text-[#a0b0b6]">{tokenPrice(order.targetPriceUsd)} で {order.sellPercent ?? 100}% 売却</span>
+                                  <button type="button" onClick={() => void onCancelLimitOrder(order.id)} className="ml-3 text-rose-400 hover:text-rose-300">取消</button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -751,15 +861,21 @@ function Scanner({
 function FavoritesView({
   favorites,
   activities,
+  limitOrders,
   onAdd,
   onDelete,
   onAddManual,
+  onCreateLimitOrder,
+  onCancelLimitOrder,
 }: {
   favorites: FavoriteToken[];
   activities: ActivityByWallet;
+  limitOrders: LimitOrder[];
   onAdd: (mint: string) => Promise<string | null>;
   onDelete: (mint: string) => void;
   onAddManual: (address: string, label: string, origin?: TrackedWallet["origin"]) => string | null;
+  onCreateLimitOrder: (body: { tokenMint: string; tokenSymbol: string; side: "BUY" | "SELL"; targetPriceUsd: number; amountUsd?: number; sellPercent?: number; positionId?: string }) => Promise<void>;
+  onCancelLimitOrder: (id: string) => Promise<void>;
 }) {
   const [mint, setMint] = useState("");
   const [adding, setAdding] = useState(false);
@@ -768,6 +884,16 @@ function FavoritesView({
   const [walletResults, setWalletResults] = useState<Record<string, FavoriteWalletScanResponse>>({});
   const [loadingMint, setLoadingMint] = useState<string | null>(null);
   const [copiedMint, setCopiedMint] = useState<string | null>(null);
+  // 指値買いパネル
+  const [buyPanelMint, setBuyPanelMint] = useState<string | null>(null);
+  const [buyTargetPrice, setBuyTargetPrice] = useState("");
+  const [buyAmount, setBuyAmount] = useState("");
+  const [buyPanelBusy, setBuyPanelBusy] = useState(false);
+  const [buyPanelMsg, setBuyPanelMsg] = useState<string | null>(null);
+  const openBuyPanel = (tokenMint: string) => {
+    setBuyPanelMint(current => current === tokenMint ? null : tokenMint);
+    setBuyTargetPrice(""); setBuyAmount(""); setBuyPanelMsg(null);
+  };
   const submit = async () => {
     setAdding(true);
     setMessage(null);
@@ -838,8 +964,80 @@ function FavoritesView({
                 </button>
                 <div className="flex flex-wrap gap-2 border-t border-white/[0.07] px-5 py-3">
                   <button onClick={() => void copyCa(token.mint)} className="rounded-lg border border-white/10 px-3 py-2 text-xs text-[#b5c0c4] hover:border-[#38e7ae] hover:text-[#38e7ae]">{copiedMint === token.mint ? "コピーしました" : "CAをコピー"}</button>
+                  <button
+                    onClick={() => openBuyPanel(token.mint)}
+                    className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${buyPanelMint === token.mint ? "border-[#38e7ae]/30 bg-[#38e7ae]/10 text-[#38e7ae]" : "border-white/10 text-[#a0b0b6] hover:border-[#38e7ae]/30 hover:text-[#38e7ae]"}`}
+                  >
+                    指値買い
+                    {limitOrders.filter(o => o.side === "BUY" && o.status === "PENDING" && o.tokenMint === token.mint).length > 0 && (
+                      <span className="ml-1.5 rounded bg-[#38e7ae]/20 px-1 text-[9px] text-[#38e7ae]">
+                        {limitOrders.filter(o => o.side === "BUY" && o.status === "PENDING" && o.tokenMint === token.mint).length}
+                      </span>
+                    )}
+                  </button>
                   <button onClick={() => onDelete(token.mint)} className="ml-auto flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 text-xs text-[#89989e] hover:border-rose-400/50 hover:text-rose-300"><Trash2 size={13} />削除</button>
                 </div>
+                {buyPanelMint === token.mint && (
+                  <div className="border-t border-white/[0.07] bg-[#0a0f11] px-5 py-4">
+                    <p className="mb-3 text-[11px] font-semibold text-[#a0b0b6]">指値買い注文（価格以下になったら自動購入）</p>
+                    {buyPanelMsg && <p className="mb-3 text-xs text-amber-300">{buyPanelMsg}</p>}
+                    <div className="flex flex-wrap items-end gap-3">
+                      <div className="w-36">
+                        <p className="mb-1 text-[10px] text-[#7f9097]">目標価格 USDC（以下で購入）</p>
+                        <input
+                          type="number" min={0} step="any"
+                          value={buyTargetPrice}
+                          onChange={e => setBuyTargetPrice(e.target.value)}
+                          placeholder={`$${token.priceUsd.toPrecision(4)}`}
+                          className="w-full rounded-lg border border-white/10 bg-[#141b1e] px-3 py-2 text-xs text-white focus:border-[#38e7ae]/50 focus:outline-none"
+                        />
+                      </div>
+                      <div className="w-28">
+                        <p className="mb-1 text-[10px] text-[#7f9097]">購入金額 USDC</p>
+                        <input
+                          type="number" min={1} step="any"
+                          value={buyAmount}
+                          onChange={e => setBuyAmount(e.target.value)}
+                          placeholder="10"
+                          className="w-full rounded-lg border border-white/10 bg-[#141b1e] px-3 py-2 text-xs text-white focus:border-[#38e7ae]/50 focus:outline-none"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        disabled={buyPanelBusy}
+                        onClick={async () => {
+                          const price = Number(buyTargetPrice);
+                          const amt = Number(buyAmount);
+                          if (!price || price <= 0) { setBuyPanelMsg("目標価格を入力してください"); return; }
+                          if (!amt || amt <= 0) { setBuyPanelMsg("購入金額を入力してください"); return; }
+                          setBuyPanelBusy(true); setBuyPanelMsg(null);
+                          try {
+                            await onCreateLimitOrder({ tokenMint: token.mint, tokenSymbol: token.symbol, side: "BUY", targetPriceUsd: price, amountUsd: amt });
+                            setBuyPanelMsg(`指値買い設定: ${token.symbol} $${price} 以下で ${amt} USDC 購入`);
+                            setBuyTargetPrice(""); setBuyAmount("");
+                          } catch (e) { setBuyPanelMsg(e instanceof Error ? e.message : "指値注文の設定に失敗しました"); }
+                          finally { setBuyPanelBusy(false); }
+                        }}
+                        className="min-h-9 rounded-lg border border-[#38e7ae]/25 bg-[#38e7ae]/[0.08] px-4 text-xs font-semibold text-[#38e7ae] hover:bg-[#38e7ae]/[0.14] disabled:opacity-50"
+                      >
+                        {buyPanelBusy ? "処理中…" : "指値買い設定"}
+                      </button>
+                    </div>
+                    {limitOrders.filter(o => o.side === "BUY" && o.status === "PENDING" && o.tokenMint === token.mint).length > 0 && (
+                      <div className="mt-4">
+                        <p className="mb-2 text-[10px] text-[#7f9097]">未執行の指値買い注文</p>
+                        <div className="flex flex-col gap-2">
+                          {limitOrders.filter(o => o.side === "BUY" && o.status === "PENDING" && o.tokenMint === token.mint).map(order => (
+                            <div key={order.id} className="flex items-center justify-between rounded-lg border border-white/[0.07] bg-[#141b1e] px-3 py-2 text-[10px]">
+                              <span className="text-[#a0b0b6]">${order.targetPriceUsd} 以下で {order.amountUsd} USDC 購入</span>
+                              <button type="button" onClick={() => void onCancelLimitOrder(order.id)} className="ml-3 text-rose-400 hover:text-rose-300">取消</button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="grid grid-cols-3 gap-px border-t border-white/[0.07] bg-white/[0.07]">
                   <div className="bg-[#101619] p-4"><p className="text-[10px] text-[#68787e]">現在価格</p><p className="mt-1 text-sm font-semibold tabular-nums">${token.priceUsd.toPrecision(5)}</p></div>
                   <div className="bg-[#101619] p-4"><p className="text-[10px] text-[#68787e]">流動性</p><p className="mt-1 text-sm font-semibold tabular-nums">{money(token.liquidityUsd)}</p></div>
@@ -1457,11 +1655,30 @@ export function TradingApp() {
     return () => window.clearInterval(timer);
   }, [hydrated, syncServerMonitor]);
 
-  const closePosition = useCallback((position: LivePaperPosition, reason: string, exitPrice = position.currentPriceUsd) => {
+  const [limitOrders, setLimitOrders] = useState<LimitOrder[]>([]);
+  const refreshLimitOrders = useCallback(() => {
+    void requestJson<LimitOrder[]>("/api/live/limit-orders").then(setLimitOrders).catch(() => undefined);
+  }, []);
+  useEffect(() => { if (hydrated && settingsLoaded) refreshLimitOrders(); }, [hydrated, settingsLoaded, refreshLimitOrders]);
+  const createLimitOrder = useCallback(async (body: {
+    tokenMint: string; tokenSymbol: string; side: "BUY" | "SELL";
+    targetPriceUsd: number; amountUsd?: number; sellPercent?: number; positionId?: string;
+  }) => {
+    await requestJson("/api/live/limit-orders", 30_000, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    refreshLimitOrders();
+  }, [refreshLimitOrders]);
+  const cancelLimitOrder = useCallback(async (id: string) => {
+    await requestJson(`/api/live/limit-orders?id=${encodeURIComponent(id)}`, 30_000, { method: "DELETE" });
+    refreshLimitOrders();
+  }, [refreshLimitOrders]);
+
+  const closePosition = useCallback((position: LivePaperPosition, reason: string, exitPrice = position.currentPriceUsd, sellPercent?: number) => {
     void requestJson("/api/live/copy-monitor", 90_000, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: position.id, exitPriceUsd: exitPrice, reason }),
+      body: JSON.stringify({ id: position.id, exitPriceUsd: exitPrice, reason, ...(sellPercent != null && sellPercent < 100 ? { sellPercent } : {}) }),
     }).then(() => syncServerMonitor())
       .catch(closeError => setError(closeError instanceof Error ? closeError.message : "手動決済に失敗しました"));
   }, [syncServerMonitor]);
@@ -1748,10 +1965,10 @@ export function TradingApp() {
             <Badge tone={settings.liveTradingEnabled ? "red" : "amber"}><CircleDollarSign size={12} className="mr-1" />{settings.liveTradingEnabled ? "実資金モード" : "資金はデモ"}</Badge>
             <Badge tone="gray">コピー元 {wallets.length}/{COPY_SOURCE_WALLET_LIMIT}</Badge>
           </div>
-          {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} liveMode={settings.liveTradingEnabled} liveStatus={liveStatus} onClose={closePosition} />}
+          {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} liveMode={settings.liveTradingEnabled} liveStatus={liveStatus} limitOrders={limitOrders} onClose={closePosition} onCreateLimitOrder={createLimitOrder} onCancelLimitOrder={cancelLimitOrder} />}
           {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={removeWallet} onToggle={toggleWallet} onStopAll={stopAllWallets} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
           {view === "scanner" && <Scanner network={scanNetwork} onNetworkChange={setScanNetwork} result={scanResult} scanState={scanState} scanning={scanState?.status === "RUNNING"} wallets={wallets} autoCount={wallets.length} onScan={scan} onAddCandidate={addScanCandidate} />}
-          {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} />}
+          {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} limitOrders={limitOrders} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} onCreateLimitOrder={createLimitOrder} onCancelLimitOrder={cancelLimitOrder} />}
           {view === "activity" && <MobileActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}
           {view === "settings" && <SettingsView settings={settings} liveStatus={liveStatus} dailyLoss={dailyLoss} onChange={setSettings} />}
         </main>

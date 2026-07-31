@@ -504,24 +504,39 @@ export async function settlePositionById(
       triggerAt: trigger?.triggerAt ?? null,
       sellSubmittedAt,
     }, true);
-    const swap = await executeLiveSwap({
-      idempotencyKey: `SELL:${position.id}`,
-      userId: position.userId,
-      sourceWalletId: position.sourceWalletId,
-      paperPositionId: position.id,
-      side: "SELL",
-      inputMint: position.tokenMint,
-      outputMint: USDC_MINT,
-      inputAmount: position.rawTokenAmount,
-      maxSlippagePercent: settings.maxSlippage,
-    });
-    const proceedsUsd = Number(swap.outputAmount) / 1_000_000;
-    const quantity = Number(position.quantity);
-    exitPrice = proceedsUsd / quantity;
-    pnlUsd = proceedsUsd - Number(position.amountUsd);
-    sellSignature = swap.signature;
-    sellSubmittedAt = swap.executeSubmittedAt;
-    sellFilledAt = swap.executeCompletedAt;
+    let swapSucceeded = false;
+    try {
+      const swap = await executeLiveSwap({
+        idempotencyKey: `SELL:${position.id}`,
+        userId: position.userId,
+        sourceWalletId: position.sourceWalletId,
+        paperPositionId: position.id,
+        side: "SELL",
+        inputMint: position.tokenMint,
+        outputMint: USDC_MINT,
+        inputAmount: position.rawTokenAmount,
+        maxSlippagePercent: settings.maxSlippage,
+      });
+      const proceedsUsd = Number(swap.outputAmount) / 1_000_000;
+      const quantity = Number(position.quantity);
+      exitPrice = proceedsUsd / quantity;
+      pnlUsd = proceedsUsd - Number(position.amountUsd);
+      sellSignature = swap.signature;
+      sellSubmittedAt = swap.executeSubmittedAt;
+      sellFilledAt = swap.executeCompletedAt;
+      swapSucceeded = true;
+    } catch (swapError) {
+      // ウォレット残高が実際に0なら外部で売却済みとみなして強制CLOSED
+      const bal = await getLiveTokenRawBalance(position.tokenMint).catch(() => BigInt(-1));
+      if (bal !== BigInt(0)) throw swapError;
+      await logEvent("exit.balance-empty", "トークン残高0のため強制CLOSED", {
+        positionId: position.id, tokenMint: position.tokenMint,
+        originalError: swapError instanceof Error ? swapError.message : String(swapError),
+      }, true);
+      exitPrice = quotedExitPrice ?? Number(position.copyPriceUsd);
+      pnlUsd = Number(position.quantity) * exitPrice - Number(position.amountUsd);
+    }
+    void swapSucceeded; // suppress unused warning
   } else {
     if (!exitPrice || exitPrice <= 0) throw new Error("ペーパートレードの決済価格を取得できません");
     pnlUsd = Number(position.quantity) * exitPrice - Number(position.amountUsd);
@@ -601,6 +616,253 @@ export async function settlePositionById(
   }, true);
   return updated;
 }
+
+// ─── 指値・部分決済ヘルパー ─────────────────────────────────────────────────
+
+async function getOrCreateSystemWallet() {
+  if (!prisma) throw new Error("DATABASE_URLが未設定です");
+  const existing = await prisma.trackedWallet.findFirst({
+    where: { network: "SOLANA", address: "LIMIT_ORDER_SYSTEM" },
+    select: { id: true },
+  });
+  if (existing) return existing.id;
+  const created = await prisma.trackedWallet.create({
+    data: {
+      network: "SOLANA",
+      address: "LIMIT_ORDER_SYSTEM",
+      displayName: "指値注文",
+      origin: "SYSTEM",
+      firstTradeAt: new Date(),
+    },
+  });
+  return created.id;
+}
+
+export async function partialSettlePositionById(
+  positionId: string,
+  sellPercent: number,
+  quotedExitPrice?: number,
+) {
+  if (!prisma) throw new Error("DATABASE_URLが未設定です");
+  const pct = Math.min(100, Math.max(1, sellPercent));
+  if (pct >= 100) return settlePositionById(positionId, "MANUAL", quotedExitPrice);
+
+  const position = await prisma.paperPosition.findUniqueOrThrow({ where: { id: positionId } });
+  if (position.status !== "OPEN") return position;
+
+  const fraction = pct / 100;
+  let partialProceeds = 0;
+
+  if (position.executionMode === "LIVE") {
+    if (!position.rawTokenAmount) throw new Error("実売買ポジションのトークン数量が保存されていません");
+    const settings = await getOrCreateCopySettings();
+    const totalRaw = BigInt(position.rawTokenAmount);
+    const soldRaw = totalRaw * BigInt(Math.round(pct)) / 100n;
+    if (soldRaw <= 0n) throw new Error("売却数量が0です");
+    const swap = await executeLiveSwap({
+      idempotencyKey: `PARTIAL:${position.id}:${Math.round(pct)}:${Date.now()}`,
+      userId: position.userId,
+      sourceWalletId: position.sourceWalletId,
+      paperPositionId: position.id,
+      side: "SELL",
+      inputMint: position.tokenMint,
+      outputMint: USDC_MINT,
+      inputAmount: soldRaw.toString(),
+      maxSlippagePercent: settings.maxSlippage,
+    });
+    partialProceeds = Number(swap.outputAmount) / 1_000_000;
+    const remainingRaw = totalRaw - soldRaw;
+    await prisma.paperPosition.update({
+      where: { id: position.id },
+      data: {
+        rawTokenAmount: remainingRaw.toString(),
+        quantity: Number(position.quantity) * (1 - fraction),
+        amountUsd: Number(position.amountUsd) * (1 - fraction),
+      },
+    });
+  } else {
+    if (!quotedExitPrice || quotedExitPrice <= 0) throw new Error("ペーパートレードの決済価格を取得できません");
+    partialProceeds = Number(position.quantity) * fraction * quotedExitPrice;
+    await prisma.paperPosition.update({
+      where: { id: position.id },
+      data: {
+        quantity: Number(position.quantity) * (1 - fraction),
+        amountUsd: Number(position.amountUsd) * (1 - fraction),
+      },
+    });
+  }
+
+  const partialPnl = partialProceeds - Number(position.amountUsd) * fraction;
+  await logEvent("copy.partial-sold", `${pct}%部分決済`, {
+    positionId: position.id,
+    sellPercent: pct,
+    partialProceedsUsd: partialProceeds,
+    partialPnlUsd: partialPnl,
+    executionMode: position.executionMode,
+  }, true);
+  return prisma.paperPosition.findUniqueOrThrow({ where: { id: position.id } });
+}
+
+async function executeLimitBuy(
+  userId: string,
+  order: { id: string; tokenMint: string; tokenSymbol: string; amountUsd: Prisma.Decimal | null; targetPriceUsd: Prisma.Decimal },
+  settings: CopySettings,
+  quote: LiveTokenQuote,
+) {
+  if (!prisma) throw new Error("DATABASE_URLが未設定です");
+  const amountToSpend = Number(order.amountUsd ?? settings.amountPerTrade);
+  if (amountToSpend <= 0) throw new Error("購入金額が0以下です");
+  const systemWalletId = await getOrCreateSystemWallet();
+
+  let executionMode: "PAPER" | "LIVE" = "PAPER";
+  let rawTokenAmount: string | null = null;
+  let tokenDecimals: number | null = null;
+  let buySignature: string | null = null;
+  let quantity: number;
+  let amountUsd: number;
+  let copyPriceUsd: number;
+
+  if (settings.liveTradingEnabled) {
+    tokenDecimals = await getMintDecimals(order.tokenMint);
+    const swap = await executeLiveSwap({
+      idempotencyKey: `LIMIT_BUY:${order.id}`,
+      userId,
+      sourceWalletId: systemWalletId,
+      side: "BUY",
+      inputMint: USDC_MINT,
+      outputMint: order.tokenMint,
+      inputAmount: String(Math.max(1, Math.round(amountToSpend * 1_000_000))),
+      maxSlippagePercent: settings.maxSlippage,
+    });
+    rawTokenAmount = swap.outputAmount;
+    quantity = Number(swap.outputAmount) / 10 ** tokenDecimals;
+    amountUsd = Number(swap.inputAmount) / 1_000_000;
+    if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Jupiterの受取数量が不正です");
+    copyPriceUsd = amountUsd / quantity;
+    executionMode = "LIVE";
+    buySignature = swap.signature;
+  } else {
+    quantity = amountToSpend / quote.priceUsd;
+    amountUsd = amountToSpend;
+    copyPriceUsd = quote.priceUsd;
+  }
+
+  const position = await prisma.paperPosition.create({
+    data: {
+      userId,
+      sourceWalletId: systemWalletId,
+      sourceSignature: `LIMIT_BUY:${order.id}`,
+      tokenMint: order.tokenMint,
+      tokenSymbol: order.tokenSymbol,
+      sourceBoughtAt: new Date(),
+      copiedAt: new Date(),
+      detectionDelayMs: 0,
+      sourcePriceUsd: quote.priceUsd,
+      copyPriceUsd,
+      entryMarketCapUsd: quote.marketCapUsd > 0 ? quote.marketCapUsd : null,
+      slippagePercent: 0,
+      amountUsd,
+      amountSol: 0,
+      quantity,
+      executionMode,
+      rawTokenAmount,
+      tokenDecimals,
+      buySignature,
+      status: "OPEN",
+    },
+  });
+  await prisma.limitOrder.update({
+    where: { id: order.id },
+    data: { status: "TRIGGERED", triggeredAt: new Date(), positionId: position.id },
+  });
+  await logEvent("limit.buy.triggered", "指値買い実行", {
+    orderId: order.id, mint: order.tokenMint,
+    targetPriceUsd: Number(order.targetPriceUsd), actualPriceUsd: copyPriceUsd,
+    amountUsd, executionMode,
+  }, true);
+}
+
+async function executeLimitSell(
+  order: { id: string; tokenMint: string; positionId: string | null; sellPercent: Prisma.Decimal | null },
+  currentPrice: number,
+) {
+  if (!prisma) throw new Error("DATABASE_URLが未設定です");
+  let position: { id: string } | null = null;
+  if (order.positionId) {
+    position = await prisma.paperPosition.findFirst({ where: { id: order.positionId, status: "OPEN" }, select: { id: true } });
+  }
+  if (!position) {
+    const user = await ensureAppUser();
+    position = await prisma.paperPosition.findFirst({
+      where: { userId: user.id, tokenMint: order.tokenMint, status: "OPEN", executionMode: "LIVE" },
+      orderBy: { copiedAt: "asc" },
+      select: { id: true },
+    });
+  }
+  if (!position) {
+    await prisma.limitOrder.update({
+      where: { id: order.id },
+      data: { status: "CANCELLED", cancelledAt: new Date(), errorMessage: "売却対象ポジションが見つかりません" },
+    });
+    return;
+  }
+  const pct = Math.min(100, Math.max(1, Number(order.sellPercent ?? 100)));
+  if (pct >= 100) {
+    await settlePositionById(position.id, "MANUAL", currentPrice);
+  } else {
+    await partialSettlePositionById(position.id, pct, currentPrice);
+  }
+  await prisma.limitOrder.update({
+    where: { id: order.id },
+    data: { status: "TRIGGERED", triggeredAt: new Date(), positionId: position.id },
+  });
+  await logEvent("limit.sell.triggered", "指値売り実行", {
+    orderId: order.id, positionId: position.id, mint: order.tokenMint,
+    actualPriceUsd: currentPrice, sellPercent: pct,
+  }, true);
+}
+
+export async function runLimitOrderCycle() {
+  if (!prisma) return;
+  try {
+    const user = await ensureAppUser();
+    const settings = await getOrCreateCopySettings();
+    const pendingOrders = await prisma.limitOrder.findMany({
+      where: { userId: user.id, status: "PENDING" },
+    });
+    if (!pendingOrders.length) return;
+    const mints = [...new Set(pendingOrders.map(o => o.tokenMint))];
+    const quotes = await getTokenQuotes(mints, { verbose: false }).catch(() => new Map<string, LiveTokenQuote>());
+    for (const order of pendingOrders) {
+      const quote = quotes.get(order.tokenMint);
+      if (!quote?.priceUsd || quote.priceUsd <= 0) continue;
+      const shouldTrigger = order.side === "BUY"
+        ? quote.priceUsd <= Number(order.targetPriceUsd)
+        : quote.priceUsd >= Number(order.targetPriceUsd);
+      if (!shouldTrigger) continue;
+      try {
+        if (order.side === "BUY") {
+          await executeLimitBuy(user.id, order, settings, quote);
+        } else {
+          await executeLimitSell(order, quote.priceUsd);
+        }
+      } catch (error) {
+        await prisma.limitOrder.update({
+          where: { id: order.id },
+          data: { status: "FAILED", errorMessage: error instanceof Error ? error.message : String(error) },
+        });
+        await logEvent("limit.order.failed", `指値${order.side === "BUY" ? "買い" : "売り"}失敗`, {
+          orderId: order.id, side: order.side,
+          error: error instanceof Error ? error.message : String(error),
+        }, true);
+      }
+    }
+  } catch (error) {
+    console.error("[NEXT-TRADE][limit.order.cycle]", error);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function processSell(
   wallet: { id: string; address: string },
@@ -827,6 +1089,21 @@ export async function runPositionMonitorCycle() {
       const batch = await getTokenQuotes(uniqueMints.slice(index, index + 30), { verbose: false });
       for (const [mint, quote] of batch) quotes.set(mint, quote);
     }
+
+    // 購入時MC が null のOPENポジションに遡及補完（現在MCで近似）
+    const needsMcFill = activePositions.filter(p => !p.entryMarketCapUsd);
+    if (needsMcFill.length && prisma) {
+      await Promise.allSettled(needsMcFill.map(async position => {
+        const quote = quotes.get(position.tokenMint);
+        if (quote && quote.marketCapUsd > 0) {
+          await prisma!.paperPosition.update({
+            where: { id: position.id },
+            data: { entryMarketCapUsd: quote.marketCapUsd },
+          });
+        }
+      }));
+    }
+
     for (const position of activePositions) {
       const quote = quotes.get(position.tokenMint);
       if (!quote?.priceUsd || quote.priceUsd <= 0) continue;
@@ -881,6 +1158,8 @@ export async function runPositionMonitorCycle() {
       }
     }
     runtime.lastPositionCycleAt = new Date().toISOString();
+    // 指値注文チェック
+    await runLimitOrderCycle();
   } catch (error) {
     runtime.positionLastError = error instanceof Error ? error.message : String(error);
     console.error("[NEXT-TRADE][position.monitor.cycle]", {

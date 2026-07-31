@@ -4,6 +4,7 @@ export type CopySettings = {
   amountPerTrade: number;
   maxPositions: number;
   maxDailyAmount: number;
+  maxWallets: number;
   dailyLossLimitEnabled: boolean;
   dailyLossLimit: number;
   dailyLossIncludeUnrealized: boolean;
@@ -16,6 +17,24 @@ export type CopySettings = {
   maxDetectionSeconds: number;
   maxPriceRiseEnabled: boolean;
   maxPriceRise: number;
+};
+
+export type LimitOrderSide = "BUY" | "SELL";
+export type LimitOrderStatus = "PENDING" | "TRIGGERED" | "FAILED" | "CANCELLED";
+
+export type LimitOrder = {
+  id: string;
+  tokenMint: string;
+  tokenSymbol: string;
+  side: LimitOrderSide;
+  targetPriceUsd: number;
+  amountUsd?: number;
+  sellPercent?: number;
+  positionId?: string;
+  status: LimitOrderStatus;
+  createdAt: string;
+  triggeredAt?: string;
+  errorMessage?: string;
 };
 
 export type TradeModeFilter = "LIVE" | "PAPER" | "ALL";

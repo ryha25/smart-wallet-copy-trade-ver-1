@@ -63,6 +63,7 @@ model User {
   paperTrades    PaperTrade[]
   skippedTrades  SkippedTrade[]
   liveExecutions LiveTradeExecution[]
+  limitOrders    LimitOrder[]
 
   @@map("users")
 }
@@ -395,6 +396,39 @@ model WalletScanRun {
   @@index([network, status, startedAt])
   @@index([completedAt])
   @@map("wallet_scan_runs")
+}
+
+model LimitOrder {
+  id             String           @id @default(cuid())
+  userId         String           @map("user_id")
+  tokenMint      String           @map("token_mint")
+  tokenSymbol    String           @map("token_symbol")
+  side           LimitOrderSide
+  targetPriceUsd Decimal          @map("target_price_usd") @db.Decimal(20, 8)
+  amountUsd      Decimal?         @map("amount_usd") @db.Decimal(20, 6)
+  sellPercent    Decimal?         @map("sell_percent") @db.Decimal(5, 2)
+  positionId     String?          @map("position_id")
+  status         LimitOrderStatus @default(PENDING)
+  createdAt      DateTime         @default(now()) @map("created_at")
+  triggeredAt    DateTime?        @map("triggered_at")
+  cancelledAt    DateTime?        @map("cancelled_at")
+  errorMessage   String?          @map("error_message")
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("limit_orders")
+}
+
+enum LimitOrderSide {
+  BUY
+  SELL
+}
+
+enum LimitOrderStatus {
+  PENDING
+  TRIGGERED
+  FAILED
+  CANCELLED
 }
 
 model WalletAnalysisCache {
