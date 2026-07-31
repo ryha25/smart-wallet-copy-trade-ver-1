@@ -83,6 +83,9 @@ function dbSettingsToClient(settings: {
   amountPerTradeUsd: Prisma.Decimal;
   maxPositions: number;
   maxDailyAmountUsd: Prisma.Decimal;
+  dailyLossLimitEnabled: boolean;
+  dailyLossLimitUsd: Prisma.Decimal;
+  dailyLossIncludeUnrealized: boolean;
   stopLossEnabled: boolean;
   stopLossPercent: Prisma.Decimal;
   takeProfitEnabled: boolean;
@@ -99,6 +102,9 @@ function dbSettingsToClient(settings: {
     amountPerTrade: Number(settings.amountPerTradeUsd),
     maxPositions: settings.maxPositions,
     maxDailyAmount: Number(settings.maxDailyAmountUsd),
+    dailyLossLimitEnabled: settings.dailyLossLimitEnabled,
+    dailyLossLimit: Number(settings.dailyLossLimitUsd),
+    dailyLossIncludeUnrealized: settings.dailyLossIncludeUnrealized,
     stopLossEnabled: settings.stopLossEnabled,
     stopLoss: Number(settings.stopLossPercent),
     takeProfitEnabled: settings.takeProfitEnabled,
@@ -156,6 +162,9 @@ export async function saveCopySettings(settings: CopySettings) {
       amountPerTradeUsd: settings.amountPerTrade,
       maxPositions: settings.maxPositions,
       maxDailyAmountUsd: settings.maxDailyAmount,
+      dailyLossLimitEnabled: settings.dailyLossLimitEnabled,
+      dailyLossLimitUsd: settings.dailyLossLimit,
+      dailyLossIncludeUnrealized: settings.dailyLossIncludeUnrealized,
       stopLossEnabled: settings.stopLossEnabled,
       stopLossPercent: settings.stopLoss,
       takeProfitEnabled: settings.takeProfitEnabled,
@@ -174,6 +183,9 @@ export async function saveCopySettings(settings: CopySettings) {
       amountPerTradeUsd: settings.amountPerTrade,
       maxPositions: settings.maxPositions,
       maxDailyAmountUsd: settings.maxDailyAmount,
+      dailyLossLimitEnabled: settings.dailyLossLimitEnabled,
+      dailyLossLimitUsd: settings.dailyLossLimit,
+      dailyLossIncludeUnrealized: settings.dailyLossIncludeUnrealized,
       stopLossEnabled: settings.stopLossEnabled,
       stopLossPercent: settings.stopLoss,
       takeProfitEnabled: settings.takeProfitEnabled,
