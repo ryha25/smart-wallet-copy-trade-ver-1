@@ -1282,8 +1282,8 @@ function SettingsView({
               <Field type="number" label="損失上限" value={settings.dailyLossLimit} suffix="USDC" onChange={value => update("dailyLossLimit", Number(value))} />
               <div className="mt-3 rounded-lg bg-rose-400/[0.06] p-3 text-xs">
                 <p className="text-[#9ba9ae]">本日のLIVE確定損失</p>
-                <p className="mt-1 font-semibold text-rose-200">{dailyLoss.lossUsd.toFixed(2)} / {settings.dailyLossLimit.toFixed(2)} USDC</p>
-                {settings.dailyLossLimitEnabled && dailyLoss.lossUsd >= settings.dailyLossLimit && (
+                <p className="mt-1 font-semibold text-rose-200">{(dailyLoss?.lossUsd ?? 0).toFixed(2)} / {(settings.dailyLossLimit ?? 0).toFixed(2)} USDC</p>
+                {settings.dailyLossLimitEnabled && (dailyLoss?.lossUsd ?? 0) >= (settings.dailyLossLimit ?? 0) && (
                   <p className="mt-2 leading-5 text-rose-200">本日の損失上限に到達しました。新規コピー購入を停止しています。次回リセット：翌日 0:00（日本時間）</p>
                 )}
               </div>
@@ -1403,7 +1403,7 @@ export function TradingApp() {
         // server returns an empty array resurrects positions that were already sold.
         setPositions(serverTrades.positions);
         setSkipped(serverTrades.skipped);
-        setDailyLoss(serverTrades.dailyLoss);
+        setDailyLoss(serverTrades.dailyLoss ?? { lossUsd: 0, nextResetAt: null });
       } catch (syncError) {
         setError(syncError instanceof Error ? syncError.message : "DB保存データの同期に失敗しました");
       }
@@ -1445,7 +1445,7 @@ export function TradingApp() {
     const payload = await requestJson<{ positions: LivePaperPosition[]; skipped: SkippedPaperTrade[]; dailyLoss: { lossUsd: number; nextResetAt: string | null } }>("/api/live/copy-monitor", 30_000, { method: "PUT" });
     setPositions(payload.positions);
     setSkipped(payload.skipped);
-    setDailyLoss(payload.dailyLoss);
+    setDailyLoss(payload.dailyLoss ?? { lossUsd: 0, nextResetAt: null });
   }, []);
 
   useEffect(() => {
