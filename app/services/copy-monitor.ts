@@ -251,7 +251,9 @@ function latestSignature(events: LiveWalletEvent[]) {
 function eventsAfterMarker(events: LiveWalletEvent[], marker: string) {
   const ordered = [...events].sort((a, b) => b.blockTime - a.blockTime);
   const markerIndex = ordered.findIndex(event => event.signature === marker);
-  return markerIndex < 0 ? [] : ordered.slice(0, markerIndex);
+  // markerIndex < 0 means the marker is older than our fetch window (wallet is very active).
+  // Treat all fetched events as new — processBuy/skipTrade use upsert so duplicates are safe.
+  return markerIndex < 0 ? ordered : ordered.slice(0, markerIndex);
 }
 
 async function skipTrade(

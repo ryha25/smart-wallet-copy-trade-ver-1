@@ -61761,7 +61761,7 @@ function latestSignature(events) {
 function eventsAfterMarker(events, marker) {
   const ordered = [...events].sort((a, b) => b.blockTime - a.blockTime);
   const markerIndex = ordered.findIndex((event) => event.signature === marker);
-  return markerIndex < 0 ? [] : ordered.slice(0, markerIndex);
+  return markerIndex < 0 ? ordered : ordered.slice(0, markerIndex);
 }
 async function skipTrade(userId, walletId, event, reason) {
   if (!prisma) return;
