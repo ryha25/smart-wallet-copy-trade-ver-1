@@ -1,8 +1,8 @@
 import { Prisma } from "@prisma/client";
 import { defaultSettings } from "../lib/default-settings";
-import { evaluateCopySignal } from "../lib/paper-trading";
+import { evaluateCopySignal, evaluatePositionExit } from "../lib/paper-trading";
 import { prisma } from "../lib/prisma";
-import type { CopyMonitorStatus, LiveWalletEvent } from "../lib/live-types";
+import type { CopyMonitorStatus, LiveTokenQuote, LiveWalletEvent } from "../lib/live-types";
 import type { CopySettings } from "../lib/types";
 import {
   executeLiveSwap,
@@ -26,6 +26,12 @@ type MonitorRuntime = {
   skippedTrades: number;
   lastError: string | null;
   lastBalanceReconcileAt: number;
+  // position monitor
+  positionTimer: ReturnType<typeof setInterval> | null;
+  positionRunning: boolean;
+  lastPositionCycleAt: string | null;
+  monitoredPositions: number;
+  positionLastError: string | null;
 };
 
 const runtimeRoot = globalThis as typeof globalThis & {
@@ -45,6 +51,11 @@ const runtime = runtimeRoot.nextTradeCopyMonitor ?? {
   skippedTrades: 0,
   lastError: null,
   lastBalanceReconcileAt: 0,
+  positionTimer: null,
+  positionRunning: false,
+  lastPositionCycleAt: null,
+  monitoredPositions: 0,
+  positionLastError: null,
 };
 runtimeRoot.nextTradeCopyMonitor = runtime;
 
@@ -682,13 +693,131 @@ async function reconcileLivePositionBalances(
   return reconciled;
 }
 
+function tokyoDayRange(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find(part => part.type === type)?.value);
+  const start = new Date(Date.UTC(value("year"), value("month") - 1, value("day")) - 9 * 60 * 60 * 1000);
+  return { start, end: new Date(start.getTime() + 24 * 60 * 60 * 1000) };
+}
+
+export async function getLiveDailyLoss(userId?: string) {
+  if (!prisma) return { lossUsd: 0, nextResetAt: null as string | null };
+  const resolvedUserId = userId ?? (await ensureAppUser()).id;
+  const { start, end } = tokyoDayRange();
+  const losses = await prisma.paperPosition.findMany({
+    where: {
+      userId: resolvedUserId,
+      executionMode: "LIVE",
+      status: "CLOSED",
+      closedAt: { gte: start, lt: end },
+      pnlUsd: { lt: 0 },
+    },
+    select: { pnlUsd: true },
+  });
+  return {
+    lossUsd: losses.reduce((total, item) => total + Math.abs(Number(item.pnlUsd ?? 0)), 0),
+    nextResetAt: end.toISOString(),
+  };
+}
+
+export async function runPositionMonitorCycle() {
+  if (runtime.positionRunning || !prisma) {
+    return {
+      running: runtime.positionRunning,
+      lastCycleAt: runtime.lastPositionCycleAt,
+      monitoredPositions: runtime.monitoredPositions,
+      lastError: runtime.positionLastError,
+    };
+  }
+  runtime.positionRunning = true;
+  runtime.positionLastError = null;
+  try {
+    const settings = await getOrCreateCopySettings();
+    if (!settings.stopLossEnabled && !settings.takeProfitEnabled) {
+      runtime.lastPositionCycleAt = new Date().toISOString();
+      runtime.positionRunning = false;
+      return {
+        running: false,
+        lastCycleAt: runtime.lastPositionCycleAt,
+        monitoredPositions: runtime.monitoredPositions,
+        lastError: null,
+      };
+    }
+    const positions = await prisma.paperPosition.findMany({
+      where: { status: "OPEN" },
+      orderBy: { copiedAt: "asc" },
+    });
+    runtime.monitoredPositions = positions.length;
+    if (!positions.length) {
+      runtime.lastPositionCycleAt = new Date().toISOString();
+      runtime.positionRunning = false;
+      return {
+        running: false,
+        lastCycleAt: runtime.lastPositionCycleAt,
+        monitoredPositions: 0,
+        lastError: null,
+      };
+    }
+    const uniqueMints = [...new Set(positions.map(p => p.tokenMint))];
+    const quotes = new Map<string, LiveTokenQuote>();
+    for (let i = 0; i < uniqueMints.length; i += 30) {
+      const batch = await getTokenQuotes(uniqueMints.slice(i, i + 30), { verbose: false });
+      for (const [mint, quote] of batch) quotes.set(mint, quote);
+    }
+    for (const position of positions) {
+      const quote = quotes.get(position.tokenMint);
+      if (!quote?.priceUsd || quote.priceUsd <= 0) continue;
+      const entryPrice = Number(position.copyPriceUsd);
+      const pnlPercent = (quote.priceUsd - entryPrice) / entryPrice * 100;
+      const reason: "TAKE_PROFIT" | "STOP_LOSS" | null =
+        settings.takeProfitEnabled && pnlPercent >= settings.takeProfit ? "TAKE_PROFIT"
+        : settings.stopLossEnabled && pnlPercent <= -settings.stopLoss ? "STOP_LOSS"
+        : null;
+      if (!reason) continue;
+      try {
+        await settlePositionById(position.id, reason, quote.priceUsd);
+      } catch {
+        // continue monitoring other positions
+      }
+    }
+    runtime.lastPositionCycleAt = new Date().toISOString();
+  } catch (error) {
+    runtime.positionLastError = error instanceof Error ? error.message : String(error);
+  } finally {
+    runtime.positionRunning = false;
+  }
+  return {
+    running: runtime.positionRunning,
+    lastCycleAt: runtime.lastPositionCycleAt,
+    monitoredPositions: runtime.monitoredPositions,
+    lastError: runtime.positionLastError,
+  };
+}
+
 export function installCopyMonitor() {
   if (process.env.COPY_MONITOR_EXTERNAL_WORKER === "true") return;
-  if (runtime.timer || !prisma) return;
-  const seconds = Math.max(10, Number(process.env.COPY_MONITOR_INTERVAL_SECONDS ?? "15") || 15);
-  runtime.timer = setInterval(() => { void runCopyMonitorCycle(); }, seconds * 1000);
-  runtime.timer.unref?.();
-  void runCopyMonitorCycle();
+  if (!prisma) return;
+  if (!runtime.timer) {
+    const seconds = Math.max(10, Number(process.env.COPY_MONITOR_INTERVAL_SECONDS ?? "15") || 15);
+    runtime.timer = setInterval(() => { void runCopyMonitorCycle(); }, seconds * 1000);
+    runtime.timer.unref?.();
+    void runCopyMonitorCycle();
+  }
+  if (!runtime.positionTimer) {
+    const intervalMs = Math.max(
+      1_000,
+      Number(process.env.POSITION_MONITOR_INTERVAL_MS ?? "1000") || 1_000,
+    );
+    runtime.positionTimer = setInterval(() => { void runPositionMonitorCycle(); }, intervalMs);
+    runtime.positionTimer.unref?.();
+    void runPositionMonitorCycle();
+  }
 }
 
 export function getCopyMonitorStatus(): CopyMonitorStatus {

@@ -161,6 +161,22 @@ export type FavoriteToken = LiveTokenQuote & {
   addedAt: string;
 };
 
+export type ModePerformance = {
+  mode: "LIVE" | "PAPER";
+  realizedPnlUsd: number;
+  unrealizedPnlUsd: number;
+  todayPnlUsd: number;
+  winRate: number;
+  closedCount: number;
+  winCount: number;
+  lossCount: number;
+  openCount: number;
+  averageWinUsd: number;
+  averageLossUsd: number;
+  maxWinUsd: number;
+  maxLossUsd: number;
+};
+
 export type LivePaperPosition = {
   id: string;
   signature: string;

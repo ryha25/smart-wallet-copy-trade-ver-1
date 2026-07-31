@@ -1,5 +1,5 @@
 run = "pnpm run replit:dev"
-modules = ["nodejs-24"]
+modules = ["nodejs-24", "postgresql-16"]
 
 [[ports]]
 localPort = 8080
@@ -17,3 +17,6 @@ run = "pnpm run replit:start"
 
 [userenv.shared]
 DEBUG_ERRORS = "true"
+
+[nix]
+channel = "stable-25_05"

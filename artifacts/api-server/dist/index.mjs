@@ -60026,7 +60026,7 @@ function valueSwaps(swaps, solHistory, currentSolPrice, quotes) {
     };
   });
 }
-async function getTokenQuotes(mints) {
+async function getTokenQuotes2(mints) {
   const unique = [...new Set(mints)].filter(Boolean).slice(0, 30);
   if (!unique.length) return /* @__PURE__ */ new Map();
   const dexScreenerUrl = `https://api.dexscreener.com/tokens/v1/solana/${unique.map(encodeURIComponent).join(",")}`;
@@ -60149,7 +60149,7 @@ async function getLiveWalletActivity(address) {
     (tx) => swapsFromTransaction(tx, address, tx.transaction.signatures?.[0] ?? crypto.randomUUID())
   );
   const quoteMints = [.../* @__PURE__ */ new Set([...raw.map((item) => item.mint), WRAPPED_SOL_MINT])];
-  const quotes = await getTokenQuotes(quoteMints).catch(() => /* @__PURE__ */ new Map());
+  const quotes = await getTokenQuotes2(quoteMints).catch(() => /* @__PURE__ */ new Map());
   const now = Math.floor(Date.now() / 1e3);
   const oldest = Math.min(...raw.map((item) => item.blockTime).filter(Boolean), now);
   const history = raw.some((item) => item.quoteKind === "SOL") ? await solPriceHistory(oldest, now).catch(() => []) : [];
@@ -60327,11 +60327,11 @@ async function analyzeWalletWithEvents(address, historyPages = 1) {
   const needsSol = raw.some((item) => item.quoteKind === "SOL");
   const [solHistory, quotes] = await Promise.all([
     needsSol ? solPriceHistory(since, now).catch(() => []) : Promise.resolve([]),
-    getTokenQuotes(needsSol ? [WRAPPED_SOL_MINT] : []).catch(() => /* @__PURE__ */ new Map())
+    getTokenQuotes2(needsSol ? [WRAPPED_SOL_MINT] : []).catch(() => /* @__PURE__ */ new Map())
   ]);
   const baseEvents = valueSwaps(raw, solHistory, quotes.get(WRAPPED_SOL_MINT)?.priceUsd ?? null, /* @__PURE__ */ new Map());
   const openMints = [...portfolioLots(baseEvents).lots.entries()].filter(([, lots]) => lots.some((lot) => lot.quantity > 1e-12)).map(([mint]) => mint).slice(0, 30);
-  const currentQuotes = await getTokenQuotes(openMints).catch(() => /* @__PURE__ */ new Map());
+  const currentQuotes = await getTokenQuotes2(openMints).catch(() => /* @__PURE__ */ new Map());
   const events = baseEvents.map((event) => ({ ...event, current: currentQuotes.get(event.mint) ?? null }));
   const firstTime = first.data[0]?.blockTime ?? now;
   const ageDays = Math.max(0, Math.floor((now - firstTime) / 86400));
@@ -61610,7 +61610,12 @@ var runtime2 = runtimeRoot3.nextTradeCopyMonitor ?? {
   createdPositions: 0,
   skippedTrades: 0,
   lastError: null,
-  lastBalanceReconcileAt: 0
+  lastBalanceReconcileAt: 0,
+  positionTimer: null,
+  positionRunning: false,
+  lastPositionCycleAt: null,
+  monitoredPositions: 0,
+  positionLastError: null
 };
 runtimeRoot3.nextTradeCopyMonitor = runtime2;
 async function ensureAppUser() {
@@ -62081,15 +62086,127 @@ async function runCopyMonitorCycle() {
   }
   return getCopyMonitorStatus();
 }
+function tokyoDayRange(now = /* @__PURE__ */ new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now);
+  const value = (type) => Number(parts.find((part) => part.type === type)?.value);
+  const start = new Date(Date.UTC(value("year"), value("month") - 1, value("day")) - 9 * 60 * 60 * 1e3);
+  return { start, end: new Date(start.getTime() + 24 * 60 * 60 * 1e3) };
+}
+async function getLiveDailyLoss(userId) {
+  if (!prisma) return { lossUsd: 0, nextResetAt: null };
+  const resolvedUserId = userId ?? (await ensureAppUser()).id;
+  const { start, end } = tokyoDayRange();
+  const losses = await prisma.paperPosition.findMany({
+    where: {
+      userId: resolvedUserId,
+      executionMode: "LIVE",
+      status: "CLOSED",
+      closedAt: { gte: start, lt: end },
+      pnlUsd: { lt: 0 }
+    },
+    select: { pnlUsd: true }
+  });
+  return {
+    lossUsd: losses.reduce((total, item) => total + Math.abs(Number(item.pnlUsd ?? 0)), 0),
+    nextResetAt: end.toISOString()
+  };
+}
+async function runPositionMonitorCycle() {
+  if (runtime2.positionRunning || !prisma) {
+    return {
+      running: runtime2.positionRunning,
+      lastCycleAt: runtime2.lastPositionCycleAt,
+      monitoredPositions: runtime2.monitoredPositions,
+      lastError: runtime2.positionLastError
+    };
+  }
+  runtime2.positionRunning = true;
+  runtime2.positionLastError = null;
+  try {
+    const settings = await getOrCreateCopySettings();
+    if (!settings.stopLossEnabled && !settings.takeProfitEnabled) {
+      runtime2.lastPositionCycleAt = (/* @__PURE__ */ new Date()).toISOString();
+      runtime2.positionRunning = false;
+      return {
+        running: false,
+        lastCycleAt: runtime2.lastPositionCycleAt,
+        monitoredPositions: runtime2.monitoredPositions,
+        lastError: null
+      };
+    }
+    const positions = await prisma.paperPosition.findMany({
+      where: { status: "OPEN" },
+      orderBy: { copiedAt: "asc" }
+    });
+    runtime2.monitoredPositions = positions.length;
+    if (!positions.length) {
+      runtime2.lastPositionCycleAt = (/* @__PURE__ */ new Date()).toISOString();
+      runtime2.positionRunning = false;
+      return {
+        running: false,
+        lastCycleAt: runtime2.lastPositionCycleAt,
+        monitoredPositions: 0,
+        lastError: null
+      };
+    }
+    const uniqueMints = [...new Set(positions.map((p) => p.tokenMint))];
+    const quotes = /* @__PURE__ */ new Map();
+    for (let i = 0; i < uniqueMints.length; i += 30) {
+      const batch = await getTokenQuotes(uniqueMints.slice(i, i + 30), { verbose: false });
+      for (const [mint, quote] of batch) quotes.set(mint, quote);
+    }
+    for (const position of positions) {
+      const quote = quotes.get(position.tokenMint);
+      if (!quote?.priceUsd || quote.priceUsd <= 0) continue;
+      const entryPrice = Number(position.copyPriceUsd);
+      const pnlPercent = (quote.priceUsd - entryPrice) / entryPrice * 100;
+      const reason = settings.takeProfitEnabled && pnlPercent >= settings.takeProfit ? "TAKE_PROFIT" : settings.stopLossEnabled && pnlPercent <= -settings.stopLoss ? "STOP_LOSS" : null;
+      if (!reason) continue;
+      try {
+        await settlePositionById(position.id, reason, quote.priceUsd);
+      } catch {
+      }
+    }
+    runtime2.lastPositionCycleAt = (/* @__PURE__ */ new Date()).toISOString();
+  } catch (error) {
+    runtime2.positionLastError = error instanceof Error ? error.message : String(error);
+  } finally {
+    runtime2.positionRunning = false;
+  }
+  return {
+    running: runtime2.positionRunning,
+    lastCycleAt: runtime2.lastPositionCycleAt,
+    monitoredPositions: runtime2.monitoredPositions,
+    lastError: runtime2.positionLastError
+  };
+}
 function installCopyMonitor() {
   if (process.env.COPY_MONITOR_EXTERNAL_WORKER === "true") return;
-  if (runtime2.timer || !prisma) return;
-  const seconds = Math.max(10, Number(process.env.COPY_MONITOR_INTERVAL_SECONDS ?? "15") || 15);
-  runtime2.timer = setInterval(() => {
+  if (!prisma) return;
+  if (!runtime2.timer) {
+    const seconds = Math.max(10, Number(process.env.COPY_MONITOR_INTERVAL_SECONDS ?? "15") || 15);
+    runtime2.timer = setInterval(() => {
+      void runCopyMonitorCycle();
+    }, seconds * 1e3);
+    runtime2.timer.unref?.();
     void runCopyMonitorCycle();
-  }, seconds * 1e3);
-  runtime2.timer.unref?.();
-  void runCopyMonitorCycle();
+  }
+  if (!runtime2.positionTimer) {
+    const intervalMs = Math.max(
+      1e3,
+      Number(process.env.POSITION_MONITOR_INTERVAL_MS ?? "1000") || 1e3
+    );
+    runtime2.positionTimer = setInterval(() => {
+      void runPositionMonitorCycle();
+    }, intervalMs);
+    runtime2.positionTimer.unref?.();
+    void runPositionMonitorCycle();
+  }
 }
 function getCopyMonitorStatus() {
   return {
@@ -62117,7 +62234,7 @@ router2.get("/token", async (request, response) => {
     } catch (publicKeyError) {
       throw new Error(`CA\u3092PublicKey\u3068\u3057\u3066\u89E3\u6790\u3067\u304D\u307E\u305B\u3093: ${mint}`, { cause: publicKeyError });
     }
-    const quote = (await getTokenQuotes([mint])).get(mint);
+    const quote = (await getTokenQuotes2([mint])).get(mint);
     if (!quote) {
       response.status(404).json({
         error: "DexScreener\u3067\u53D6\u5F15\u30DA\u30A2\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093",
@@ -62359,6 +62476,48 @@ router2.put("/copy-monitor", async (_request, response) => {
       prisma.paperPosition.findMany({ include: { sourceWallet: true }, orderBy: { copiedAt: "desc" }, take: 500 }),
       prisma.skippedTrade.findMany({ include: { sourceWallet: true }, orderBy: { detectedAt: "desc" }, take: 500 })
     ]);
+    const openMints = positions.filter((p) => p.status === "OPEN").map((p) => p.tokenMint);
+    const quotes = await getTokenQuotes2(openMints, { verbose: false }).catch(() => /* @__PURE__ */ new Map());
+    const todayKey = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Tokyo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).format(/* @__PURE__ */ new Date());
+    const performanceFor = (mode) => {
+      const scoped = positions.filter((p) => p.executionMode === mode);
+      const closed = scoped.filter((p) => p.status === "CLOSED" && p.pnlUsd != null);
+      const open = scoped.filter((p) => p.status === "OPEN");
+      const pnls = closed.map((p) => Number(p.pnlUsd ?? 0));
+      const wins = pnls.filter((v) => v > 0);
+      const losses = pnls.filter((v) => v < 0);
+      const unrealizedPnlUsd = open.reduce((total, p) => {
+        const currentPrice = quotes.get(p.tokenMint)?.priceUsd ?? Number(p.copyPriceUsd);
+        return total + Number(p.quantity) * currentPrice - Number(p.amountUsd);
+      }, 0);
+      const todayPnlUsd = closed.filter((p) => p.closedAt && new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Tokyo",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).format(p.closedAt) === todayKey).reduce((total, p) => total + Number(p.pnlUsd ?? 0), 0);
+      return {
+        mode,
+        realizedPnlUsd: pnls.reduce((a, b) => a + b, 0),
+        unrealizedPnlUsd,
+        todayPnlUsd,
+        winRate: closed.length ? wins.length / closed.length * 100 : 0,
+        closedCount: closed.length,
+        winCount: wins.length,
+        lossCount: losses.length,
+        openCount: open.length,
+        averageWinUsd: wins.length ? wins.reduce((a, b) => a + b, 0) / wins.length : 0,
+        averageLossUsd: losses.length ? losses.reduce((a, b) => a + b, 0) / losses.length : 0,
+        maxWinUsd: wins.length ? Math.max(...wins) : 0,
+        maxLossUsd: losses.length ? Math.min(...losses) : 0
+      };
+    };
+    const dailyLoss = await getLiveDailyLoss();
     response.setHeader("cache-control", "no-store").json({
       positions: positions.map((position) => ({
         id: position.id,
@@ -62371,7 +62530,10 @@ router2.put("/copy-monitor", async (_request, response) => {
         detectionDelaySeconds: Math.floor(position.detectionDelayMs / 1e3),
         sourcePriceUsd: Number(position.sourcePriceUsd),
         copyPriceUsd: Number(position.copyPriceUsd),
-        currentPriceUsd: Number(position.exitPriceUsd ?? position.copyPriceUsd),
+        currentPriceUsd: position.status === "OPEN" ? quotes.get(position.tokenMint)?.priceUsd ?? Number(position.copyPriceUsd) : Number(position.exitPriceUsd ?? position.copyPriceUsd),
+        entryMarketCapUsd: position.entryMarketCapUsd ? Number(position.entryMarketCapUsd) : void 0,
+        currentMarketCapUsd: position.status === "OPEN" ? quotes.get(position.tokenMint)?.marketCapUsd || void 0 : position.exitMarketCapUsd ? Number(position.exitMarketCapUsd) : void 0,
+        exitMarketCapUsd: position.exitMarketCapUsd ? Number(position.exitMarketCapUsd) : void 0,
         amountUsd: Number(position.amountUsd),
         liquidityUsd: 0,
         status: position.status === "OPEN" ? "OPEN" : "CLOSED",
@@ -62380,7 +62542,8 @@ router2.put("/copy-monitor", async (_request, response) => {
         sellSignature: position.sellSignature ?? void 0,
         closedAt: position.closedAt?.toISOString(),
         exitPriceUsd: position.exitPriceUsd ? Number(position.exitPriceUsd) : void 0,
-        exitReason: position.settlementReason ?? void 0
+        exitReason: position.settlementReason ?? void 0,
+        realizedPnlUsd: position.pnlUsd == null ? void 0 : Number(position.pnlUsd)
       })),
       skipped: skipped.map((item) => ({
         id: item.id,
@@ -62389,8 +62552,14 @@ router2.put("/copy-monitor", async (_request, response) => {
         mint: item.tokenMint,
         symbol: item.tokenSymbol ?? item.tokenMint.slice(0, 8),
         detectedAt: item.detectedAt.toISOString(),
-        reason: item.reasonDetail ?? item.reasonCode
-      }))
+        reason: item.reasonDetail ?? item.reasonCode,
+        executionMode: item.executionMode ?? "UNKNOWN"
+      })),
+      performance: {
+        LIVE: performanceFor("LIVE"),
+        PAPER: performanceFor("PAPER")
+      },
+      dailyLoss
     });
   } catch (error) {
     response.status(500).json(apiError(error, "copy-monitor.trades"));
