@@ -35,6 +35,7 @@ import {
 } from "../services/copy-monitor";
 import type { ModePerformance } from "../lib/live-types";
 import { getLiveTradingStatus } from "../services/live-trading";
+import { isNtfyConfigured, getNtfySubscribeUrl } from "../lib/push-notify";
 
 const router = Router();
 
@@ -433,6 +434,17 @@ router.patch("/copy-monitor", async (request, response) => {
   } catch (error) {
     response.status(400).json(apiError(error, "copy-monitor.settle"));
   }
+});
+
+router.get("/notifications", (_request, response) => {
+  response.setHeader("cache-control", "no-store").json({
+    configured: isNtfyConfigured(),
+    subscribeUrl: getNtfySubscribeUrl(),
+    appInstallUrls: {
+      ios: "https://apps.apple.com/app/ntfy/id1625396347",
+      android: "https://play.google.com/store/apps/details?id=io.heckel.ntfy",
+    },
+  });
 });
 
 export default router;

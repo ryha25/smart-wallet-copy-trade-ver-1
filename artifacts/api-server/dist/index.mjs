@@ -62282,6 +62282,18 @@ function getCopyMonitorStatus() {
   };
 }
 
+// src/lib/push-notify.ts
+var NTFY_BASE = (process.env.NTFY_URL ?? "https://ntfy.sh").replace(/\/$/, "");
+var NTFY_TOPIC = process.env.NTFY_TOPIC?.trim();
+var NTFY_TOKEN = process.env.NTFY_TOKEN?.trim();
+function getNtfySubscribeUrl() {
+  if (!NTFY_TOPIC) return null;
+  return `${NTFY_BASE}/${NTFY_TOPIC}`;
+}
+function isNtfyConfigured() {
+  return Boolean(NTFY_TOPIC);
+}
+
 // src/routes/live.ts
 var router2 = (0, import_express2.Router)();
 router2.get("/token", async (request, response) => {
@@ -62634,6 +62646,16 @@ router2.patch("/copy-monitor", async (request, response) => {
   } catch (error) {
     response.status(400).json(apiError(error, "copy-monitor.settle"));
   }
+});
+router2.get("/notifications", (_request, response) => {
+  response.setHeader("cache-control", "no-store").json({
+    configured: isNtfyConfigured(),
+    subscribeUrl: getNtfySubscribeUrl(),
+    appInstallUrls: {
+      ios: "https://apps.apple.com/app/ntfy/id1625396347",
+      android: "https://play.google.com/store/apps/details?id=io.heckel.ntfy"
+    }
+  });
 });
 var live_default = router2;
 

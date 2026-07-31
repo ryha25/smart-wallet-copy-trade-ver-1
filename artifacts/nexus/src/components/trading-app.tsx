@@ -1728,7 +1728,7 @@ export function TradingApp() {
   useEffect(() => {
     if (hydrated && settingsLoaded) {
       void requestJson<{ configured: boolean; subscribeUrl: string | null }>("/api/live/notifications")
-        .then(setNtfyConfig).catch(() => undefined);
+        .then(setNtfyConfig).catch(() => setNtfyConfig({ configured: false, subscribeUrl: null }));
     }
   }, [hydrated, settingsLoaded]);
 
