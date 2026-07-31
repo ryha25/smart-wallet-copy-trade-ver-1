@@ -173,6 +173,9 @@ export type LivePaperPosition = {
   sourcePriceUsd: number | null;
   copyPriceUsd: number;
   currentPriceUsd: number;
+  entryMarketCapUsd?: number;
+  currentMarketCapUsd?: number;
+  exitMarketCapUsd?: number;
   amountUsd: number;
   liquidityUsd: number;
   status: "OPEN" | "CLOSED";
@@ -182,6 +185,23 @@ export type LivePaperPosition = {
   closedAt?: string;
   exitPriceUsd?: number;
   exitReason?: string;
+  realizedPnlUsd?: number;
+};
+
+export type ModePerformance = {
+  mode: "LIVE" | "PAPER";
+  realizedPnlUsd: number;
+  unrealizedPnlUsd: number;
+  todayPnlUsd: number;
+  winRate: number;
+  closedCount: number;
+  winCount: number;
+  lossCount: number;
+  openCount: number;
+  averageWinUsd: number;
+  averageLossUsd: number;
+  maxWinUsd: number;
+  maxLossUsd: number;
 };
 
 export type SkippedPaperTrade = {
@@ -192,4 +212,5 @@ export type SkippedPaperTrade = {
   symbol: string;
   detectedAt: string;
   reason: string;
+  executionMode?: "PAPER" | "LIVE" | "UNKNOWN";
 };

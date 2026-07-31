@@ -27,3 +27,24 @@ export function calculatePaperPnl(entryPrice: number, exitPrice: number, amountU
   const pnlPct = ((exitPrice - entryPrice) / entryPrice) * 100;
   return { pnlPct, pnlUsd: amountUsd * pnlPct / 100 };
 }
+
+export function evaluatePositionExit(
+  entryPrice: number,
+  currentPrice: number,
+  settings: Pick<CopySettings, "stopLossEnabled" | "stopLoss" | "takeProfitEnabled" | "takeProfit">,
+): {
+  reason: "STOP_LOSS" | "TAKE_PROFIT" | null;
+  pnlPercent: number | null;
+} {
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(currentPrice) || currentPrice <= 0) {
+    return { reason: null as "STOP_LOSS" | "TAKE_PROFIT" | null, pnlPercent: null };
+  }
+  const pnlPercent = (currentPrice - entryPrice) / entryPrice * 100;
+  const reason: "STOP_LOSS" | "TAKE_PROFIT" | null =
+    settings.stopLossEnabled && pnlPercent <= -settings.stopLoss
+      ? "STOP_LOSS"
+      : settings.takeProfitEnabled && pnlPercent >= settings.takeProfit
+        ? "TAKE_PROFIT"
+        : null;
+  return { reason, pnlPercent };
+}

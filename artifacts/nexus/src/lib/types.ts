@@ -4,6 +4,9 @@ export type CopySettings = {
   amountPerTrade: number;
   maxPositions: number;
   maxDailyAmount: number;
+  dailyLossLimitEnabled: boolean;
+  dailyLossLimit: number;
+  dailyLossIncludeUnrealized: boolean;
   stopLossEnabled: boolean;
   stopLoss: number;
   takeProfitEnabled: boolean;
@@ -14,6 +17,8 @@ export type CopySettings = {
   maxPriceRiseEnabled: boolean;
   maxPriceRise: number;
 };
+
+export type TradeModeFilter = "LIVE" | "PAPER" | "ALL";
 
 export type LiveTradingStatus = {
   environmentEnabled: boolean;
