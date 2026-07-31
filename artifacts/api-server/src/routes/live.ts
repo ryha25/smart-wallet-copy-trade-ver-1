@@ -31,6 +31,7 @@ import {
   runCopyMonitorCycle,
   saveCopySettings,
   settlePositionById,
+  forceClosePositionById,
 } from "../services/copy-monitor";
 import type { ModePerformance } from "../lib/live-types";
 import { getLiveTradingStatus } from "../services/live-trading";
@@ -423,9 +424,11 @@ router.put("/copy-monitor", async (_request, response) => {
 router.patch("/copy-monitor", async (request, response) => {
   try {
     if (!prisma) throw new Error("DATABASE_URLが未設定です");
-    const body = request.body as { id?: string; exitPriceUsd?: number };
+    const body = request.body as { id?: string; exitPriceUsd?: number; sellPercent?: number; force?: boolean };
     if (!body.id) throw new Error("決済対象を確認してください");
-    const updated = await settlePositionById(body.id, "MANUAL", body.exitPriceUsd);
+    const updated = body.force
+      ? await forceClosePositionById(body.id)
+      : await settlePositionById(body.id, "MANUAL", body.exitPriceUsd);
     response.setHeader("cache-control", "no-store").json({ id: updated.id, status: updated.status });
   } catch (error) {
     response.status(400).json(apiError(error, "copy-monitor.settle"));

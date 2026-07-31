@@ -373,6 +373,29 @@ async function processBuy(
   }, true);
 }
 
+export async function forceClosePositionById(positionId: string) {
+  if (!prisma) throw new Error("DATABASE_URLが未設定です");
+  const position = await prisma.paperPosition.findUniqueOrThrow({ where: { id: positionId }, include: { sourceWallet: true } });
+  if (position.status !== "OPEN") return position;
+  let exitPrice = Number(position.copyPriceUsd);
+  try {
+    const { getTokenQuotes } = await import("./solana-live");
+    const quotes = await getTokenQuotes([position.tokenMint], { verbose: false });
+    const q = quotes.get(position.tokenMint);
+    if (q?.priceUsd && q.priceUsd > 0) exitPrice = q.priceUsd;
+  } catch { /* best-effort */ }
+  const pnlUsd = Number(position.quantity) * exitPrice - Number(position.amountUsd);
+  const pnlPercent = (exitPrice / Number(position.copyPriceUsd) - 1) * 100;
+  const updated = await prisma.paperPosition.update({
+    where: { id: position.id },
+    data: { status: "CLOSED", exitPriceUsd: exitPrice, closedAt: new Date(), pnlUsd, pnlPercent, pnlSol: 0, settlementReason: "MANUAL", rawTokenAmount: null },
+  });
+  await logEvent("copy.force-closed", "ポジション強制CLOSED", {
+    positionId, mint: position.tokenMint, exitPrice, pnlUsd,
+  }, true);
+  return updated;
+}
+
 export async function settlePositionById(
   positionId: string,
   settlementReason: "SOURCE_SOLD" | "TAKE_PROFIT" | "STOP_LOSS" | "MANUAL" | "MAX_HOLDING_TIME" | "RISK_DETECTED",
@@ -387,15 +410,28 @@ export async function settlePositionById(
   if (position.executionMode === "LIVE") {
     if (!position.rawTokenAmount) throw new Error("実売買ポジションのトークン数量が保存されていません");
     const settings = await getOrCreateCopySettings();
-    const swap = await executeLiveSwap({
-      idempotencyKey: `SELL:${position.id}`, userId: position.userId, sourceWalletId: position.sourceWalletId,
-      paperPositionId: position.id, side: "SELL", inputMint: position.tokenMint, outputMint: USDC_MINT,
-      inputAmount: position.rawTokenAmount, maxSlippagePercent: settings.maxSlippage,
-    });
-    const proceedsUsd = Number(swap.outputAmount) / 1_000_000;
-    exitPrice = proceedsUsd / Number(position.quantity);
-    pnlUsd = proceedsUsd - Number(position.amountUsd);
-    sellSignature = swap.signature;
+    try {
+      const swap = await executeLiveSwap({
+        idempotencyKey: `SELL:${position.id}`, userId: position.userId, sourceWalletId: position.sourceWalletId,
+        paperPositionId: position.id, side: "SELL", inputMint: position.tokenMint, outputMint: USDC_MINT,
+        inputAmount: position.rawTokenAmount, maxSlippagePercent: settings.maxSlippage,
+      });
+      const proceedsUsd = Number(swap.outputAmount) / 1_000_000;
+      exitPrice = proceedsUsd / Number(position.quantity);
+      pnlUsd = proceedsUsd - Number(position.amountUsd);
+      sellSignature = swap.signature;
+    } catch (swapError) {
+      // トークン残高が0の場合（ゴーストポジション）は強制CLOSEDにする
+      const msg = swapError instanceof Error ? swapError.message : String(swapError);
+      if (msg.includes("Insufficient funds") || msg.includes("insufficient")) {
+        await logEvent("copy.ghost-closed", "残高0のゴーストポジションを強制CLOSED", { positionId, mint: position.tokenMint }, true);
+        return prisma.paperPosition.update({
+          where: { id: position.id },
+          data: { status: "CLOSED", closedAt: new Date(), exitPriceUsd: quotedExitPrice ?? Number(position.copyPriceUsd), pnlUsd: 0, pnlPercent: 0, pnlSol: 0, settlementReason: "MANUAL", rawTokenAmount: null },
+        });
+      }
+      throw swapError;
+    }
   } else {
     if (!exitPrice || exitPrice <= 0) throw new Error("ペーパートレードの決済価格を取得できません");
     pnlUsd = Number(position.quantity) * exitPrice - Number(position.amountUsd);

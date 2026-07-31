@@ -59786,74 +59786,17 @@ Message: ${transactionMessage}.
   }
 });
 
-// src/app.ts
-var import_express5 = __toESM(require_express2(), 1);
-var import_cors = __toESM(require_lib3(), 1);
-var import_cookie_parser = __toESM(require_cookie_parser(), 1);
-var import_pino_http = __toESM(require_logger(), 1);
-
-// src/routes/index.ts
-var import_express4 = __toESM(require_express2(), 1);
-
-// src/routes/health.ts
-var import_express = __toESM(require_express2(), 1);
-var router = (0, import_express.Router)();
-router.get("/healthz", (_req, res) => {
-  res.json({ status: "ok" });
-});
-var health_default = router;
-
-// src/routes/live.ts
-var import_express2 = __toESM(require_express2(), 1);
-var import_web32 = __toESM(require_index_cjs(), 1);
-
-// src/lib/api-errors.ts
-function apiError(error, context) {
-  const normalized = error instanceof Error ? error : new Error(String(error));
-  const cause = normalized.cause instanceof Error ? `${normalized.cause.name}: ${normalized.cause.message}` : normalized.cause ? String(normalized.cause) : "";
-  const details = [`context=${context}`, `type=${normalized.name}`, cause ? `cause=${cause}` : ""].filter(Boolean).join(", ");
-  console.error(`[NEXT-TRADE][${context}]`, {
-    message: normalized.message,
-    details,
-    stack: normalized.stack
-  });
-  return {
-    error: normalized.message || "\u4E88\u671F\u3057\u306A\u3044\u30A8\u30E9\u30FC\u304C\u767A\u751F\u3057\u307E\u3057\u305F",
-    details,
-    ...process.env["NODE_ENV"] !== "production" || process.env["DEBUG_ERRORS"] === "true" ? { stack: normalized.stack } : {}
-  };
-}
-
-// src/lib/prisma.ts
-import { PrismaClient } from "@prisma/client";
-var globalForPrisma = globalThis;
-function databaseEnabled() {
-  return Boolean(process.env.DATABASE_URL?.trim());
-}
-var prisma = databaseEnabled() ? globalForPrisma.nextTradePrisma ?? new PrismaClient() : null;
-if (process.env.NODE_ENV !== "production" && prisma) {
-  globalForPrisma.nextTradePrisma = prisma;
-}
-
 // src/services/solana-live.ts
-var USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-var USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD5G6zK9y7J9pB6K7dVn";
-var WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
-var JUPITER_V6_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
-var SYSTEM_PROGRAM = "11111111111111111111111111111111";
-var DEX_DISCOVERY_SOURCES = [
-  { name: "Jupiter v6", programId: JUPITER_V6_PROGRAM },
-  { name: "Raydium AMM v4", programId: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" },
-  { name: "Raydium CPMM", programId: "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C" },
-  { name: "Raydium CLMM", programId: "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" },
-  { name: "Orca Whirlpool", programId: "whirLbMiicVdio4qvUfM5KAg6CtQaC3m5tqKroCT3k" },
-  { name: "Meteora DLMM", programId: "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo" },
-  { name: "Pump.fun", programId: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" },
-  { name: "PumpSwap", programId: "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA" }
-];
-var DEX_PROGRAM_IDS = new Set(DEX_DISCOVERY_SOURCES.map((source) => source.programId));
-var LAMPORTS_PER_SOL = 1e9;
-var ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+var solana_live_exports = {};
+__export(solana_live_exports, {
+  analyzeWallet: () => analyzeWallet,
+  getJupiterPaperQuote: () => getJupiterPaperQuote,
+  getLiveWalletActivity: () => getLiveWalletActivity,
+  getTokenQuotes: () => getTokenQuotes2,
+  getTokenRisk: () => getTokenRisk,
+  scanProfitableWallets: () => scanProfitableWallets,
+  scanWalletsForToken: () => scanWalletsForToken
+});
 function env(name) {
   return process.env[name]?.trim().replace(/^(['"])(.*)\1$/, "$2") ?? "";
 }
@@ -60575,9 +60518,86 @@ async function getJupiterPaperQuote(inputMint, amountUsd, slippageBps) {
     quotedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
 }
+var USDC_MINT, USDT_MINT, WRAPPED_SOL_MINT, JUPITER_V6_PROGRAM, SYSTEM_PROGRAM, DEX_DISCOVERY_SOURCES, DEX_PROGRAM_IDS, LAMPORTS_PER_SOL, ADDRESS_PATTERN;
+var init_solana_live = __esm({
+  "src/services/solana-live.ts"() {
+    "use strict";
+    USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD5G6zK9y7J9pB6K7dVn";
+    WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
+    JUPITER_V6_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+    SYSTEM_PROGRAM = "11111111111111111111111111111111";
+    DEX_DISCOVERY_SOURCES = [
+      { name: "Jupiter v6", programId: JUPITER_V6_PROGRAM },
+      { name: "Raydium AMM v4", programId: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" },
+      { name: "Raydium CPMM", programId: "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C" },
+      { name: "Raydium CLMM", programId: "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK" },
+      { name: "Orca Whirlpool", programId: "whirLbMiicVdio4qvUfM5KAg6CtQaC3m5tqKroCT3k" },
+      { name: "Meteora DLMM", programId: "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo" },
+      { name: "Pump.fun", programId: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" },
+      { name: "PumpSwap", programId: "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA" }
+    ];
+    DEX_PROGRAM_IDS = new Set(DEX_DISCOVERY_SOURCES.map((source) => source.programId));
+    LAMPORTS_PER_SOL = 1e9;
+    ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+  }
+});
+
+// src/app.ts
+var import_express5 = __toESM(require_express2(), 1);
+var import_cors = __toESM(require_lib3(), 1);
+var import_cookie_parser = __toESM(require_cookie_parser(), 1);
+var import_pino_http = __toESM(require_logger(), 1);
+
+// src/routes/index.ts
+var import_express4 = __toESM(require_express2(), 1);
+
+// src/routes/health.ts
+var import_express = __toESM(require_express2(), 1);
+var router = (0, import_express.Router)();
+router.get("/healthz", (_req, res) => {
+  res.json({ status: "ok" });
+});
+var health_default = router;
+
+// src/routes/live.ts
+var import_express2 = __toESM(require_express2(), 1);
+var import_web32 = __toESM(require_index_cjs(), 1);
+
+// src/lib/api-errors.ts
+function apiError(error, context) {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  const cause = normalized.cause instanceof Error ? `${normalized.cause.name}: ${normalized.cause.message}` : normalized.cause ? String(normalized.cause) : "";
+  const details = [`context=${context}`, `type=${normalized.name}`, cause ? `cause=${cause}` : ""].filter(Boolean).join(", ");
+  console.error(`[NEXT-TRADE][${context}]`, {
+    message: normalized.message,
+    details,
+    stack: normalized.stack
+  });
+  return {
+    error: normalized.message || "\u4E88\u671F\u3057\u306A\u3044\u30A8\u30E9\u30FC\u304C\u767A\u751F\u3057\u307E\u3057\u305F",
+    details,
+    ...process.env["NODE_ENV"] !== "production" || process.env["DEBUG_ERRORS"] === "true" ? { stack: normalized.stack } : {}
+  };
+}
+
+// src/lib/prisma.ts
+import { PrismaClient } from "@prisma/client";
+var globalForPrisma = globalThis;
+function databaseEnabled() {
+  return Boolean(process.env.DATABASE_URL?.trim());
+}
+var prisma = databaseEnabled() ? globalForPrisma.nextTradePrisma ?? new PrismaClient() : null;
+if (process.env.NODE_ENV !== "production" && prisma) {
+  globalForPrisma.nextTradePrisma = prisma;
+}
+
+// src/routes/live.ts
+init_solana_live();
 
 // src/services/wallet-scan-manager.ts
 import { Prisma } from "@prisma/client";
+init_solana_live();
 var IDLE_STATE = {
   id: null,
   status: "IDLE",
@@ -61597,6 +61617,7 @@ async function executeLiveSwap(input) {
 }
 
 // src/services/copy-monitor.ts
+init_solana_live();
 var runtimeRoot3 = globalThis;
 var runtime2 = runtimeRoot3.nextTradeCopyMonitor ?? {
   running: false,
@@ -61897,6 +61918,32 @@ async function processBuy(userId, wallet, event, settings) {
     buySignature
   }, true);
 }
+async function forceClosePositionById(positionId) {
+  if (!prisma) throw new Error("DATABASE_URL\u304C\u672A\u8A2D\u5B9A\u3067\u3059");
+  const position = await prisma.paperPosition.findUniqueOrThrow({ where: { id: positionId }, include: { sourceWallet: true } });
+  if (position.status !== "OPEN") return position;
+  let exitPrice = Number(position.copyPriceUsd);
+  try {
+    const { getTokenQuotes: getTokenQuotes3 } = await Promise.resolve().then(() => (init_solana_live(), solana_live_exports));
+    const quotes = await getTokenQuotes3([position.tokenMint], { verbose: false });
+    const q = quotes.get(position.tokenMint);
+    if (q?.priceUsd && q.priceUsd > 0) exitPrice = q.priceUsd;
+  } catch {
+  }
+  const pnlUsd = Number(position.quantity) * exitPrice - Number(position.amountUsd);
+  const pnlPercent = (exitPrice / Number(position.copyPriceUsd) - 1) * 100;
+  const updated = await prisma.paperPosition.update({
+    where: { id: position.id },
+    data: { status: "CLOSED", exitPriceUsd: exitPrice, closedAt: /* @__PURE__ */ new Date(), pnlUsd, pnlPercent, pnlSol: 0, settlementReason: "MANUAL", rawTokenAmount: null }
+  });
+  await logEvent("copy.force-closed", "\u30DD\u30B8\u30B7\u30E7\u30F3\u5F37\u5236CLOSED", {
+    positionId,
+    mint: position.tokenMint,
+    exitPrice,
+    pnlUsd
+  }, true);
+  return updated;
+}
 async function settlePositionById(positionId, settlementReason, quotedExitPrice) {
   if (!prisma) throw new Error("DATABASE_URL\u304C\u672A\u8A2D\u5B9A\u3067\u3059");
   const position = await prisma.paperPosition.findUniqueOrThrow({ where: { id: positionId }, include: { sourceWallet: true } });
@@ -61907,21 +61954,33 @@ async function settlePositionById(positionId, settlementReason, quotedExitPrice)
   if (position.executionMode === "LIVE") {
     if (!position.rawTokenAmount) throw new Error("\u5B9F\u58F2\u8CB7\u30DD\u30B8\u30B7\u30E7\u30F3\u306E\u30C8\u30FC\u30AF\u30F3\u6570\u91CF\u304C\u4FDD\u5B58\u3055\u308C\u3066\u3044\u307E\u305B\u3093");
     const settings = await getOrCreateCopySettings();
-    const swap = await executeLiveSwap({
-      idempotencyKey: `SELL:${position.id}`,
-      userId: position.userId,
-      sourceWalletId: position.sourceWalletId,
-      paperPositionId: position.id,
-      side: "SELL",
-      inputMint: position.tokenMint,
-      outputMint: USDC_MINT2,
-      inputAmount: position.rawTokenAmount,
-      maxSlippagePercent: settings.maxSlippage
-    });
-    const proceedsUsd = Number(swap.outputAmount) / 1e6;
-    exitPrice = proceedsUsd / Number(position.quantity);
-    pnlUsd = proceedsUsd - Number(position.amountUsd);
-    sellSignature = swap.signature;
+    try {
+      const swap = await executeLiveSwap({
+        idempotencyKey: `SELL:${position.id}`,
+        userId: position.userId,
+        sourceWalletId: position.sourceWalletId,
+        paperPositionId: position.id,
+        side: "SELL",
+        inputMint: position.tokenMint,
+        outputMint: USDC_MINT2,
+        inputAmount: position.rawTokenAmount,
+        maxSlippagePercent: settings.maxSlippage
+      });
+      const proceedsUsd = Number(swap.outputAmount) / 1e6;
+      exitPrice = proceedsUsd / Number(position.quantity);
+      pnlUsd = proceedsUsd - Number(position.amountUsd);
+      sellSignature = swap.signature;
+    } catch (swapError) {
+      const msg = swapError instanceof Error ? swapError.message : String(swapError);
+      if (msg.includes("Insufficient funds") || msg.includes("insufficient")) {
+        await logEvent("copy.ghost-closed", "\u6B8B\u9AD80\u306E\u30B4\u30FC\u30B9\u30C8\u30DD\u30B8\u30B7\u30E7\u30F3\u3092\u5F37\u5236CLOSED", { positionId, mint: position.tokenMint }, true);
+        return prisma.paperPosition.update({
+          where: { id: position.id },
+          data: { status: "CLOSED", closedAt: /* @__PURE__ */ new Date(), exitPriceUsd: quotedExitPrice ?? Number(position.copyPriceUsd), pnlUsd: 0, pnlPercent: 0, pnlSol: 0, settlementReason: "MANUAL", rawTokenAmount: null }
+        });
+      }
+      throw swapError;
+    }
   } else {
     if (!exitPrice || exitPrice <= 0) throw new Error("\u30DA\u30FC\u30D1\u30FC\u30C8\u30EC\u30FC\u30C9\u306E\u6C7A\u6E08\u4FA1\u683C\u3092\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093");
     pnlUsd = Number(position.quantity) * exitPrice - Number(position.amountUsd);
@@ -62570,7 +62629,7 @@ router2.patch("/copy-monitor", async (request, response) => {
     if (!prisma) throw new Error("DATABASE_URL\u304C\u672A\u8A2D\u5B9A\u3067\u3059");
     const body = request.body;
     if (!body.id) throw new Error("\u6C7A\u6E08\u5BFE\u8C61\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044");
-    const updated = await settlePositionById(body.id, "MANUAL", body.exitPriceUsd);
+    const updated = body.force ? await forceClosePositionById(body.id) : await settlePositionById(body.id, "MANUAL", body.exitPriceUsd);
     response.setHeader("cache-control", "no-store").json({ id: updated.id, status: updated.status });
   } catch (error) {
     response.status(400).json(apiError(error, "copy-monitor.settle"));
