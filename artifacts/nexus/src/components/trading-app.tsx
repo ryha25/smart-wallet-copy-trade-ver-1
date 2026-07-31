@@ -270,8 +270,16 @@ function Dashboard({
   onCreateLimitOrder: (body: { tokenMint: string; tokenSymbol: string; side: "BUY" | "SELL"; targetPriceUsd: number; amountUsd?: number; sellPercent?: number; positionId?: string }) => Promise<void>;
   onCancelLimitOrder: (id: string) => Promise<void>;
 }) {
-  const [performanceMode, setPerformanceMode] = useState<"LIVE" | "PAPER">("LIVE");
-  const [valueDisplay, setValueDisplay] = useState<"PRICE" | "MC">("PRICE");
+  const [performanceMode, setPerformanceMode] = useState<"LIVE" | "PAPER">(() => {
+    if (typeof window === "undefined") return "LIVE";
+    const saved = localStorage.getItem(STORAGE.performanceMode);
+    return (saved === "LIVE" || saved === "PAPER") ? saved : "LIVE";
+  });
+  const [valueDisplay, setValueDisplay] = useState<"PRICE" | "MC">(() => {
+    if (typeof window === "undefined") return "PRICE";
+    const saved = localStorage.getItem(STORAGE.valueDisplay);
+    return (saved === "PRICE" || saved === "MC") ? saved : "PRICE";
+  });
   // 指値パネル: positionId → { limitTargetPrice, limitSellPct, sellPct, submitting }
   const [expandedPos, setExpandedPos] = useState<string | null>(null);
   const [limitTargetPrice, setLimitTargetPrice] = useState("");
@@ -279,12 +287,6 @@ function Dashboard({
   const [immediatePercent, setImmediatePercent] = useState("100");
   const [panelBusy, setPanelBusy] = useState(false);
   const [panelMsg, setPanelMsg] = useState<string | null>(null);
-  useEffect(() => {
-    const savedMode = localStorage.getItem(STORAGE.performanceMode);
-    const savedDisplay = localStorage.getItem(STORAGE.valueDisplay);
-    if (savedMode === "LIVE" || savedMode === "PAPER") setPerformanceMode(savedMode);
-    if (savedDisplay === "PRICE" || savedDisplay === "MC") setValueDisplay(savedDisplay);
-  }, []);
   const openPanel = (posId: string) => {
     setExpandedPos(current => current === posId ? null : posId);
     setLimitTargetPrice("");

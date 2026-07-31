@@ -6,6 +6,7 @@ import type { CopyMonitorStatus, LiveTokenQuote, LiveWalletEvent } from "../lib/
 import type { CopySettings } from "../lib/types";
 import {
   executeLiveSwap,
+  getLiveSolBalance,
   getLiveTokenRawBalance,
   getLiveTradingStatus,
   getMintDecimals,
@@ -320,11 +321,20 @@ async function processBuy(
   if (settings.liveTradingEnabled) {
     try {
       const solPriceUsd = await getSolPriceUsd();
+      const inputLamports = Math.max(1, Math.round((settings.amountPerTrade / solPriceUsd) * 1e9));
+      const FEE_BUFFER_LAMPORTS = 10_000_000; // 0.01 SOL (fees + rent)
+      const solBalance = await getLiveSolBalance();
+      if (solBalance < inputLamports + FEE_BUFFER_LAMPORTS) {
+        const balanceSol = (solBalance / 1e9).toFixed(4);
+        const neededSol = ((inputLamports + FEE_BUFFER_LAMPORTS) / 1e9).toFixed(4);
+        await skipTrade(userId, wallet.id, event, `SOL残高不足 (残: ${balanceSol} SOL, 必要: ${neededSol} SOL)`);
+        return;
+      }
       tokenDecimals = await getMintDecimals(event.mint);
       const swap = await executeLiveSwap({
         idempotencyKey: `BUY:${wallet.id}:${event.signature}:${event.mint}`,
         userId, sourceWalletId: wallet.id, side: "BUY", inputMint: SOL_MINT, outputMint: event.mint,
-        inputAmount: String(Math.max(1, Math.round((settings.amountPerTrade / solPriceUsd) * 1e9))),
+        inputAmount: String(inputLamports),
         maxSlippagePercent: settings.maxSlippage,
       });
       rawTokenAmount = swap.outputAmount;

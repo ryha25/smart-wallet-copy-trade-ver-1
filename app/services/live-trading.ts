@@ -117,6 +117,11 @@ async function readJson<T>(response: Response, operation: string): Promise<T> {
   return body;
 }
 
+export async function getLiveSolBalance(): Promise<number> {
+  const wallet = loadTradingWallet();
+  return getConnection().getBalance(wallet.publicKey);
+}
+
 export async function getLiveTradingStatus(): Promise<LiveTradingStatus> {
   const environmentEnabled = process.env.LIVE_TRADING_ENABLED === "true";
   try {

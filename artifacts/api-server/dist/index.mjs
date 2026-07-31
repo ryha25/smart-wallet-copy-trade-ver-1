@@ -61518,6 +61518,10 @@ async function readJson(response, operation) {
   if (!response.ok) throw new Error(`${operation}\u5931\u6557 (HTTP ${response.status}): ${body.errorMessage ?? body.error ?? raw.slice(0, 300)}`);
   return body;
 }
+async function getLiveSolBalance() {
+  const wallet = loadTradingWallet();
+  return getConnection().getBalance(wallet.publicKey);
+}
 async function getLiveTradingStatus() {
   const environmentEnabled = process.env.LIVE_TRADING_ENABLED === "true";
   try {
@@ -61860,6 +61864,15 @@ async function processBuy(userId, wallet, event, settings) {
   if (settings.liveTradingEnabled) {
     try {
       const solPriceUsd = await getSolPriceUsd();
+      const inputLamports = Math.max(1, Math.round(settings.amountPerTrade / solPriceUsd * 1e9));
+      const FEE_BUFFER_LAMPORTS = 1e7;
+      const solBalance = await getLiveSolBalance();
+      if (solBalance < inputLamports + FEE_BUFFER_LAMPORTS) {
+        const balanceSol = (solBalance / 1e9).toFixed(4);
+        const neededSol = ((inputLamports + FEE_BUFFER_LAMPORTS) / 1e9).toFixed(4);
+        await skipTrade(userId, wallet.id, event, `SOL\u6B8B\u9AD8\u4E0D\u8DB3 (\u6B8B: ${balanceSol} SOL, \u5FC5\u8981: ${neededSol} SOL)`);
+        return;
+      }
       tokenDecimals = await getMintDecimals(event.mint);
       const swap = await executeLiveSwap({
         idempotencyKey: `BUY:${wallet.id}:${event.signature}:${event.mint}`,
@@ -61868,7 +61881,7 @@ async function processBuy(userId, wallet, event, settings) {
         side: "BUY",
         inputMint: SOL_MINT,
         outputMint: event.mint,
-        inputAmount: String(Math.max(1, Math.round(settings.amountPerTrade / solPriceUsd * 1e9))),
+        inputAmount: String(inputLamports),
         maxSlippagePercent: settings.maxSlippage
       });
       rawTokenAmount = swap.outputAmount;
