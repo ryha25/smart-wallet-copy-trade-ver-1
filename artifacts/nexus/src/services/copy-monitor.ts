@@ -12,6 +12,7 @@ import {
   USDC_MINT,
 } from "./live-trading";
 import { getLiveWalletActivity, getTokenQuotes, getTokenRisk } from "./solana-live";
+import { sendTradeNotification } from "../lib/push-notify";
 
 type MonitorRuntime = {
   running: boolean;
@@ -460,6 +461,12 @@ async function processBuy(
     executionMode,
     buySignature,
   }, true);
+  void sendTradeNotification("buy", {
+    symbol: event.current.symbol,
+    amountUsd,
+    priceUsd: copyPriceUsd,
+    executionMode: executionMode as "LIVE" | "PAPER",
+  });
 }
 
 type ExitTriggerContext = {
@@ -473,9 +480,51 @@ type ExitTriggerContext = {
   liquidityUsd?: number;
 };
 
+export async function forceClosePositionById(positionId: string) {
+  if (!prisma) throw new Error("DATABASE_URLが未設定です");
+  const position = await prisma.paperPosition.findUniqueOrThrow({
+    where: { id: positionId },
+    include: { sourceWallet: { select: { address: true } } },
+  });
+  if (position.status !== "OPEN") return position;
+
+  let exitPrice = Number(position.copyPriceUsd);
+  try {
+    const quotes = await getTokenQuotes([position.tokenMint], { verbose: false });
+    const q = quotes.get(position.tokenMint);
+    if (q?.priceUsd && q.priceUsd > 0) exitPrice = q.priceUsd;
+  } catch { /* best-effort */ }
+
+  const pnlUsd = Number(position.quantity) * exitPrice - Number(position.amountUsd);
+  const pnlPercent = (exitPrice / Number(position.copyPriceUsd) - 1) * 100;
+
+  const updated = await prisma.paperPosition.update({
+    where: { id: position.id },
+    data: {
+      status: "CLOSED",
+      exitPriceUsd: exitPrice,
+      closedAt: new Date(),
+      pnlUsd,
+      pnlPercent,
+      pnlSol: 0,
+      settlementReason: "FORCE_CLOSED",
+      rawTokenAmount: null,
+    },
+  });
+  await logEvent("copy.force-closed", "ポジション強制CLOSED", {
+    positionId, mint: position.tokenMint, executionMode: position.executionMode,
+    exitPrice, pnlUsd, pnlPercent,
+  }, true);
+  void sendTradeNotification("force_close", {
+    symbol: position.tokenSymbol, priceUsd: exitPrice,
+    executionMode: (position.executionMode ?? "PAPER") as "LIVE" | "PAPER",
+  });
+  return updated;
+}
+
 export async function settlePositionById(
   positionId: string,
-  settlementReason: "SOURCE_SOLD" | "TAKE_PROFIT" | "STOP_LOSS" | "MANUAL" | "MAX_HOLDING_TIME" | "RISK_DETECTED",
+  settlementReason: "SOURCE_SOLD" | "TAKE_PROFIT" | "STOP_LOSS" | "MANUAL" | "MAX_HOLDING_TIME" | "RISK_DETECTED" | "LIMIT_SELL",
   quotedExitPrice?: number,
   trigger?: ExitTriggerContext,
 ) {
@@ -558,6 +607,18 @@ export async function settlePositionById(
       sellSignature,
       settlementReason,
     },
+  });
+  // プッシュ通知
+  const notifyEvent = settlementReason === "STOP_LOSS" ? "stop_loss"
+    : settlementReason === "TAKE_PROFIT" ? "take_profit"
+    : settlementReason === "LIMIT_SELL" ? "limit_sell"
+    : "sell";
+  void sendTradeNotification(notifyEvent, {
+    symbol: position.tokenSymbol,
+    pnlUsd,
+    pnlPct: pnlPercent,
+    priceUsd: exitPrice,
+    executionMode: (position.executionMode ?? "PAPER") as "LIVE" | "PAPER",
   });
   const buyPriceUsd = Number(position.copyPriceUsd);
   const observedPriceUsd = trigger?.observedPriceUsd ?? quotedExitPrice ?? exitPrice;
@@ -780,6 +841,12 @@ async function executeLimitBuy(
     targetPriceUsd: Number(order.targetPriceUsd), actualPriceUsd: copyPriceUsd,
     amountUsd, executionMode,
   }, true);
+  void sendTradeNotification("limit_buy", {
+    symbol: order.tokenSymbol,
+    amountUsd,
+    priceUsd: copyPriceUsd,
+    executionMode: executionMode as "LIVE" | "PAPER",
+  });
 }
 
 async function executeLimitSell(
@@ -808,7 +875,7 @@ async function executeLimitSell(
   }
   const pct = Math.min(100, Math.max(1, Number(order.sellPercent ?? 100)));
   if (pct >= 100) {
-    await settlePositionById(position.id, "MANUAL", currentPrice);
+    await settlePositionById(position.id, "LIMIT_SELL", currentPrice);
   } else {
     await partialSettlePositionById(position.id, pct, currentPrice);
   }

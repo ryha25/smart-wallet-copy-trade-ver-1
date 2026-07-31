@@ -266,7 +266,7 @@ function Dashboard({
   liveMode: boolean;
   liveStatus: LiveTradingStatus | null;
   limitOrders: LimitOrder[];
-  onClose: (position: LivePaperPosition, reason: string, exitPrice?: number, sellPercent?: number) => void;
+  onClose: (position: LivePaperPosition, reason: string, exitPrice?: number, sellPercent?: number, force?: boolean) => void;
   onCreateLimitOrder: (body: { tokenMint: string; tokenSymbol: string; side: "BUY" | "SELL"; targetPriceUsd: number; amountUsd?: number; sellPercent?: number; positionId?: string }) => Promise<void>;
   onCancelLimitOrder: (id: string) => Promise<void>;
 }) {
@@ -392,6 +392,24 @@ function Dashboard({
                     {isExpanded && (
                       <div className="border-t border-white/[0.07] bg-[#0a0f11] px-5 py-4">
                         {panelMsg && <p className="mb-3 text-xs text-amber-300">{panelMsg}</p>}
+                        {/* 強制CLOSED（ゴーストポジション用） */}
+                        <div className="mb-5 rounded-xl border border-amber-400/20 bg-amber-400/[0.05] p-3">
+                          <p className="text-[11px] font-semibold text-amber-300">ゴーストポジション強制削除</p>
+                          <p className="mt-1 text-[10px] text-amber-200/70">Jupiter スワップ不要で DB を強制 CLOSED にします。実際には売れていないポジション専用。</p>
+                          <button
+                            type="button"
+                            disabled={panelBusy}
+                            onClick={() => {
+                              if (!window.confirm(`${position.symbol}を強制CLOSEDにします（実際の売却は行われません）。よろしいですか？`)) return;
+                              setPanelBusy(true); setPanelMsg(null);
+                              onClose(position, "強制CLOSED", undefined, undefined, true);
+                              window.setTimeout(() => { setPanelBusy(false); setExpandedPos(null); }, 1500);
+                            }}
+                            className="mt-2 rounded-lg border border-amber-400/30 bg-amber-400/[0.08] px-3 py-1.5 text-[10px] font-semibold text-amber-300 hover:bg-amber-400/[0.15] disabled:opacity-50"
+                          >
+                            {panelBusy ? "処理中…" : "強制CLOSED"}
+                          </button>
+                        </div>
                         {/* 今すぐ部分売り */}
                         <p className="mb-2 text-[11px] font-semibold text-[#a0b0b6]">今すぐ売る（現在価格）</p>
                         <div className="flex flex-wrap items-end gap-3">
@@ -1370,11 +1388,13 @@ function SettingsView({
   settings,
   liveStatus,
   dailyLoss,
+  ntfyConfig,
   onChange,
 }: {
   settings: CopySettings;
   liveStatus: LiveTradingStatus | null;
   dailyLoss: { lossUsd: number; nextResetAt: string | null };
+  ntfyConfig: { configured: boolean; subscribeUrl: string | null } | null;
   onChange: (settings: CopySettings) => void;
 }) {
   const [confirmation, setConfirmation] = useState("");
@@ -1491,6 +1511,55 @@ function SettingsView({
             <div><p className="text-sm font-semibold">同じコインへの重複購入</p><p className="mt-1 text-xs text-[#718188]">OFFなら既存ポジション保有中は見送ります</p></div>
             <Toggle checked={settings.allowDuplicate} onChange={value => update("allowDuplicate", value)} label="重複購入" />
           </div>
+        </div>
+      </Card>
+      <Card className="mt-5 max-w-4xl">
+        <SectionHeader title="📱 スマホ通知（ntfy）" note="購入・決済・指値発動をプッシュ通知します" />
+        <div className="p-5">
+          {ntfyConfig === null ? (
+            <p className="text-xs text-[#718188]">設定を読み込み中…</p>
+          ) : ntfyConfig.configured ? (
+            <>
+              <div className="mb-4 flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-[#38e7ae]" />
+                <span className="text-sm font-semibold text-[#38e7ae]">通知設定済み</span>
+              </div>
+              <p className="mb-2 text-xs text-[#a0b0b6]">ntfy アプリで以下の URL を購読してください：</p>
+              <div className="flex items-center gap-2 rounded-xl border border-[#38e7ae]/20 bg-[#0a0f11] px-4 py-3">
+                <span className="flex-1 break-all font-mono text-xs text-[#38e7ae]">{ntfyConfig.subscribeUrl}</span>
+                <button
+                  type="button"
+                  onClick={() => void navigator.clipboard.writeText(ntfyConfig.subscribeUrl ?? "")}
+                  className="shrink-0 rounded-lg border border-white/10 px-3 py-1.5 text-[10px] text-[#a0b0b6] hover:text-white"
+                >
+                  コピー
+                </button>
+              </div>
+              <div className="mt-4 grid gap-2 sm:grid-cols-2 text-xs">
+                <div className="rounded-xl bg-[#0a0f11] p-3">
+                  <p className="font-semibold text-[#a0b0b6]">📱 iOS</p>
+                  <p className="mt-1 text-[#718188]">App Store で「ntfy」を検索→インストール→上記URLを購読</p>
+                </div>
+                <div className="rounded-xl bg-[#0a0f11] p-3">
+                  <p className="font-semibold text-[#a0b0b6]">🤖 Android</p>
+                  <p className="mt-1 text-[#718188]">Google Play で「ntfy」を検索→インストール→上記URLを購読</p>
+                </div>
+              </div>
+              <div className="mt-3 text-xs text-[#718188]">
+                通知が届かない場合：<code className="rounded bg-white/[0.05] px-1">NTFY_TOPIC</code> シークレットが正しく設定されているか確認してください。
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="mb-3 text-sm text-[#a0b0b6]">通知を有効にするには <code className="rounded bg-white/[0.05] px-1">NTFY_TOPIC</code> シークレットを設定してください。</p>
+              <div className="space-y-2 text-xs text-[#718188]">
+                <p>1. App Store / Google Play で「<strong className="text-[#a0b0b6]">ntfy</strong>」アプリをインストール</p>
+                <p>2. Replit の Secrets に <code className="rounded bg-white/[0.05] px-1">NTFY_TOPIC</code> を追加（例: <code className="rounded bg-white/[0.05] px-1">next-trade-abc123</code>）</p>
+                <p>3. ntfy アプリで <code className="rounded bg-white/[0.05] px-1">https://ntfy.sh/next-trade-abc123</code> を購読</p>
+                <p>4. 再デプロイすると通知が届くようになります</p>
+              </div>
+            </>
+          )}
         </div>
       </Card>
     </>
@@ -1655,6 +1724,14 @@ export function TradingApp() {
     return () => window.clearInterval(timer);
   }, [hydrated, syncServerMonitor]);
 
+  const [ntfyConfig, setNtfyConfig] = useState<{ configured: boolean; subscribeUrl: string | null } | null>(null);
+  useEffect(() => {
+    if (hydrated && settingsLoaded) {
+      void requestJson<{ configured: boolean; subscribeUrl: string | null }>("/api/live/notifications")
+        .then(setNtfyConfig).catch(() => undefined);
+    }
+  }, [hydrated, settingsLoaded]);
+
   const [limitOrders, setLimitOrders] = useState<LimitOrder[]>([]);
   const refreshLimitOrders = useCallback(() => {
     void requestJson<LimitOrder[]>("/api/live/limit-orders").then(setLimitOrders).catch(() => undefined);
@@ -1674,11 +1751,17 @@ export function TradingApp() {
     refreshLimitOrders();
   }, [refreshLimitOrders]);
 
-  const closePosition = useCallback((position: LivePaperPosition, reason: string, exitPrice = position.currentPriceUsd, sellPercent?: number) => {
+  const closePosition = useCallback((position: LivePaperPosition, reason: string, exitPrice = position.currentPriceUsd, sellPercent?: number, force?: boolean) => {
     void requestJson("/api/live/copy-monitor", 90_000, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: position.id, exitPriceUsd: exitPrice, reason, ...(sellPercent != null && sellPercent < 100 ? { sellPercent } : {}) }),
+      body: JSON.stringify({
+        id: position.id,
+        exitPriceUsd: exitPrice,
+        reason,
+        ...(sellPercent != null && sellPercent < 100 ? { sellPercent } : {}),
+        ...(force ? { force: true } : {}),
+      }),
     }).then(() => syncServerMonitor())
       .catch(closeError => setError(closeError instanceof Error ? closeError.message : "手動決済に失敗しました"));
   }, [syncServerMonitor]);
@@ -1970,7 +2053,7 @@ export function TradingApp() {
           {view === "scanner" && <Scanner network={scanNetwork} onNetworkChange={setScanNetwork} result={scanResult} scanState={scanState} scanning={scanState?.status === "RUNNING"} wallets={wallets} autoCount={wallets.length} onScan={scan} onAddCandidate={addScanCandidate} />}
           {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} limitOrders={limitOrders} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} onCreateLimitOrder={createLimitOrder} onCancelLimitOrder={cancelLimitOrder} />}
           {view === "activity" && <MobileActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}
-          {view === "settings" && <SettingsView settings={settings} liveStatus={liveStatus} dailyLoss={dailyLoss} onChange={setSettings} />}
+          {view === "settings" && <SettingsView settings={settings} liveStatus={liveStatus} dailyLoss={dailyLoss} ntfyConfig={ntfyConfig} onChange={setSettings} />}
         </main>
       </div>
     </div>
