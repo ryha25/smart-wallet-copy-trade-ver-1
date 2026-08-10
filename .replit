@@ -1,22 +1,20 @@
-run = "pnpm run replit:dev"
-modules = ["nodejs-24", "postgresql-16"]
-
-[[ports]]
-localPort = 8080
-externalPort = 80
-
-[[ports]]
-localPort = 18245
-externalPort = 3000
+modules = ["nodejs-24"]
 
 [deployment]
-build = "pnpm run replit:build"
-run = "pnpm run replit:start"
+router = "application"
+deploymentTarget = "autoscale"
 
-[userenv]
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
 
-[userenv.shared]
-DEBUG_ERRORS = "true"
+[workflows]
+runButton = "Project"
 
-[nix]
-channel = "stable-25_05"
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 20000
