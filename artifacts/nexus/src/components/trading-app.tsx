@@ -94,7 +94,7 @@ const nav: Array<{ id: View; label: string; icon: typeof Gauge }> = [
   { id: "dashboard", label: "ダッシュボード", icon: Gauge },
   { id: "sources", label: "コピー元ウォレット", icon: WalletCards },
   { id: "scanner", label: "優秀ウォレットスキャン", icon: Radar },
-  { id: "popular", label: "人気銘柄", icon: TrendingUp },
+  { id: "popular", label: "急騰ミーム", icon: TrendingUp },
   { id: "favorites", label: "お気に入りコイン", icon: CircleDollarSign },
   { id: "activity", label: "実取引・ペーパー履歴", icon: Activity },
   { id: "settings", label: "コピー設定", icon: SettingsIcon },
@@ -1163,9 +1163,9 @@ function PopularTokensView({
       const payload = await requestJson<PopularTokens24hResponse>("/api/live/popular-tokens", 60_000);
       setTokens(payload.tokens);
       setFetchedAt(payload.fetchedAt);
-      if (!payload.tokens.length) setMessage("24時間ランキング候補が見つかりませんでした");
+      if (!payload.tokens.length) setMessage("24時間で急騰しているミーム銘柄候補が見つかりませんでした");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "人気銘柄ランキングの取得に失敗しました");
+      setMessage(error instanceof Error ? error.message : "急騰ミーム銘柄ランキングの取得に失敗しました");
     } finally {
       setLoading(false);
     }
@@ -1195,8 +1195,8 @@ function PopularTokensView({
     <>
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">人気銘柄ランキング</h1>
-          <p className="mt-1 text-sm text-[#7f9097]">Solana銘柄を24時間の出来高・取引回数・流動性で独自集計します。</p>
+          <h1 className="text-xl font-semibold">急騰ミーム銘柄ランキング</h1>
+          <p className="mt-1 text-sm text-[#7f9097]">24時間で急激に上がったSolanaミーム銘柄を、上昇率・出来高・流動性で絞ります。</p>
         </div>
         <button onClick={() => void loadRanking()} disabled={loading} className="rounded-xl border border-[#38e7ae]/25 bg-[#38e7ae]/10 px-4 py-2 text-sm font-semibold text-[#38e7ae] disabled:opacity-50">
           {loading ? "更新中…" : "ランキング更新"}
@@ -1204,13 +1204,13 @@ function PopularTokensView({
       </div>
       <Card>
         <SectionHeader
-          title="24時間ランキング"
+          title="24時間急騰ランキング"
           note={fetchedAt ? `最終取得 ${new Date(fetchedAt).toLocaleString("ja-JP")}・DexScreener実データ` : "DexScreener実データから取得"}
           action={<Badge tone="gray">24h</Badge>}
         />
         {message && <p className={`whitespace-pre-wrap break-all px-5 pt-4 text-xs leading-relaxed ${message.includes("登録しました") ? "text-emerald-300" : "text-amber-300"}`}>{message}</p>}
         {loading ? (
-          <div className="flex items-center justify-center gap-3 px-5 py-14 text-xs text-[#819097]"><RefreshCw size={15} className="animate-spin text-[#38e7ae]" />24時間ランキングを取得中…</div>
+          <div className="flex items-center justify-center gap-3 px-5 py-14 text-xs text-[#819097]"><RefreshCw size={15} className="animate-spin text-[#38e7ae]" />24時間急騰ランキングを取得中…</div>
         ) : tokens.length ? (
           <div className="divide-y divide-white/[0.07]">
             {tokens.map(token => (
@@ -1244,11 +1244,11 @@ function PopularTokensView({
             ))}
           </div>
         ) : (
-          <EmptyState title="人気銘柄ランキングは未取得です" detail="ランキング更新を押すと、24時間の出来高・取引回数からSolana銘柄を取得します。" />
+          <EmptyState title="急騰ミーム銘柄ランキングは未取得です" detail="ランキング更新を押すと、24時間上昇率20%以上を目安にSolanaミーム銘柄を取得します。" />
         )}
       </Card>
       <div className="mt-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-4 text-xs leading-6 text-amber-100/70">
-        人気ランキングは投資推奨ではありません。短期で出来高が急増した銘柄にはラグプルや急落リスクもあるため、購入前に流動性・MC・チャート・危険判定を確認してください。
+        急騰ランキングは投資推奨ではありません。短時間で急騰したミーム銘柄は急落・ラグプル・流動性抜けのリスクも高いため、購入前に流動性・MC・チャート・危険判定を確認してください。
       </div>
     </>
   );

@@ -405,8 +405,85 @@ async function getDexPairsForTokens(mints: string[]): Promise<DexScreenerPair[]>
   return pairs;
 }
 
+const MEME_TOKEN_INCLUDE_PATTERN = new RegExp(
+  [
+    "meme",
+    "dog",
+    "cat",
+    "frog",
+    "pepe",
+    "inu",
+    "shib",
+    "bonk",
+    "wif",
+    "wojak",
+    "chad",
+    "moon",
+    "pump",
+    "degen",
+    "tren",
+    "mog",
+    "popcat",
+    "pengu",
+    "goat",
+    "fwog",
+    "moodeng",
+    "retard",
+    "mascot",
+  ].join("|"),
+  "i",
+);
+
+const POPULAR_TOKEN_SYMBOL_BLOCKLIST = new Set([
+  "SOL",
+  "WSOL",
+  "USDC",
+  "USDT",
+  "JUP",
+  "JLP",
+  "RAY",
+  "ORCA",
+  "MNDE",
+  "JITO",
+  "PYTH",
+  "W",
+  "WORMHOLE",
+  "RENDER",
+  "HNT",
+  "MOBILE",
+  "IOT",
+  "WEN",
+]);
+
+const POPULAR_TOKEN_NAME_BLOCKLIST = [
+  "usd coin",
+  "tether",
+  "wrapped sol",
+  "jupiter",
+  "raydium",
+  "orca",
+  "pyth",
+  "wormhole",
+  "render",
+  "helium",
+  "marinade",
+  "jito",
+];
+
+function isMemeLikePair(pair: DexScreenerPair) {
+  const symbol = (pair.baseToken?.symbol ?? "").trim();
+  const name = (pair.baseToken?.name ?? "").trim();
+  const normalizedSymbol = symbol.toUpperCase();
+  const normalizedName = name.toLowerCase();
+  if (!symbol || !name) return false;
+  if (POPULAR_TOKEN_SYMBOL_BLOCKLIST.has(normalizedSymbol)) return false;
+  if (POPULAR_TOKEN_NAME_BLOCKLIST.some(blocked => normalizedName.includes(blocked))) return false;
+  if ((pair.dexId ?? "").toLowerCase().includes("pump")) return true;
+  return MEME_TOKEN_INCLUDE_PATTERN.test(`${symbol} ${name}`);
+}
+
 export async function getPopularTokens24h(): Promise<PopularTokens24hResponse> {
-  const searchQueries = (env("POPULAR_TOKEN_SEARCH_QUERIES") || "SOL/USDC,pump,bonk,wif,meme,cat,dog,ai")
+  const searchQueries = (env("POPULAR_TOKEN_SEARCH_QUERIES") || "pump,bonk,wif,meme,cat,dog,pepe,inu,frog,goat,popcat,fwog")
     .split(",")
     .map(query => query.trim())
     .filter(Boolean)
@@ -440,6 +517,7 @@ export async function getPopularTokens24h(): Promise<PopularTokens24hResponse> {
 
   for (const pair of pairGroups.flat()) {
     if (pair.chainId !== "solana") continue;
+    if (!isMemeLikePair(pair)) continue;
     const mint = pair.baseToken?.address;
     const priceUsd = Number(pair.priceUsd ?? 0);
     if (!mint || !ADDRESS_PATTERN.test(mint) || !Number.isFinite(priceUsd) || priceUsd <= 0) continue;
@@ -447,7 +525,9 @@ export async function getPopularTokens24h(): Promise<PopularTokens24hResponse> {
     const volume24hUsd = Number(pair.volume?.h24 ?? 0);
     const buys24h = Number(pair.txns?.h24?.buys ?? 0);
     const sells24h = Number(pair.txns?.h24?.sells ?? 0);
-    if (liquidityUsd < 5_000 || volume24hUsd <= 0 || buys24h + sells24h <= 0) continue;
+    const priceChange24h = Number(pair.priceChange?.h24 ?? 0);
+    const minimumPriceChange24h = Number(env("POPULAR_TOKEN_MIN_PRICE_CHANGE_24H") || "20");
+    if (liquidityUsd < 5_000 || volume24hUsd < 10_000 || buys24h + sells24h <= 0 || priceChange24h < minimumPriceChange24h) continue;
 
     const current = grouped.get(mint);
     if (!current) {
@@ -479,10 +559,10 @@ export async function getPopularTokens24h(): Promise<PopularTokens24hResponse> {
       const pairAgeHours = pair.pairCreatedAt ? Math.max(0, (now - pair.pairCreatedAt) / 3_600_000) : null;
       const txns24h = item.buys24h + item.sells24h;
       const popularityScore =
-        Math.log10(item.volume24hUsd + 1) * 35
-        + Math.log10(txns24h + 1) * 30
-        + Math.log10(liquidityUsd + 1) * 20
-        + Math.min(Math.abs(Number(priceChange24h ?? 0)), 200) * 0.08
+        Math.min(Number(priceChange24h ?? 0), 1_000) * 1.2
+        + Math.log10(item.volume24hUsd + 1) * 20
+        + Math.log10(txns24h + 1) * 15
+        + Math.log10(liquidityUsd + 1) * 10
         + Math.min(item.boostAmount, 100) * 0.25;
       return {
         rank: 0,
@@ -505,7 +585,11 @@ export async function getPopularTokens24h(): Promise<PopularTokens24hResponse> {
         sources: Array.from(item.sources),
       };
     })
-    .sort((a, b) => b.popularityScore - a.popularityScore)
+    .sort((a, b) =>
+      Number(b.priceChange24h ?? 0) - Number(a.priceChange24h ?? 0)
+      || b.volume24hUsd - a.volume24hUsd
+      || b.txns24h - a.txns24h
+    )
     .slice(0, 20)
     .map((token, index) => ({ ...token, rank: index + 1 }));
 
