@@ -1,3 +1,5 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+
 const SESSION_COOKIE = "next_trade_session";
 const SESSION_DURATION_SECONDS = 60 * 60 * 24 * 7;
 
@@ -6,44 +8,33 @@ type SessionPayload = {
   expiresAt: number;
 };
 
+function readSecret(name: string) {
+  return process.env[name]?.trim().replace(/^(['"])(.*)\1$/, "$2") ?? "";
+}
+
 function configuredCredentials() {
   return {
-    username: process.env.APP_USERNAME?.trim() ?? "",
-    passcode: process.env.APP_PASSCODE?.trim() ?? "",
-    secret: process.env.SESSION_SECRET?.trim() ?? "",
+    username: readSecret("APP_USERNAME"),
+    passcode: readSecret("APP_PASSCODE"),
+    secret: readSecret("SESSION_SECRET"),
   };
 }
 
-function toBase64Url(bytes: Uint8Array) {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+function toBase64Url(value: string | Buffer) {
+  return Buffer.from(value).toString("base64url");
 }
 
 function fromBase64Url(value: string) {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="));
-  return Uint8Array.from(binary, character => character.charCodeAt(0));
+  return Buffer.from(value, "base64url").toString("utf8");
 }
 
-async function sign(value: string, secret: string) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return toBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value))));
+function sign(value: string, secret: string) {
+  return createHmac("sha256", secret).update(value).digest("base64url");
 }
 
 function constantTimeEqual(left: string, right: string) {
   if (left.length !== right.length) return false;
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
-  }
-  return difference === 0;
+  return timingSafeEqual(Buffer.from(left), Buffer.from(right));
 }
 
 function readCookie(request: Request, name: string) {
@@ -84,8 +75,8 @@ export async function createSessionCookie(username: string) {
     username,
     expiresAt: Date.now() + SESSION_DURATION_SECONDS * 1000,
   };
-  const encoded = toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
-  const signature = await sign(encoded, secret);
+  const encoded = toBase64Url(JSON.stringify(payload));
+  const signature = sign(encoded, secret);
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   return `${SESSION_COOKIE}=${encoded}.${signature}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DURATION_SECONDS}${secure}`;
 }
@@ -103,10 +94,10 @@ export async function getAppSession(request: Request): Promise<SessionPayload | 
   if (separator < 1) return null;
   const encoded = token.slice(0, separator);
   const receivedSignature = token.slice(separator + 1);
-  const expectedSignature = await sign(encoded, configuredCredentials().secret);
+  const expectedSignature = sign(encoded, configuredCredentials().secret);
   if (!constantTimeEqual(receivedSignature, expectedSignature)) return null;
   try {
-    const payload = JSON.parse(new TextDecoder().decode(fromBase64Url(encoded))) as SessionPayload;
+    const payload = JSON.parse(fromBase64Url(encoded)) as SessionPayload;
     if (!payload.username || payload.expiresAt <= Date.now()) return null;
     return payload;
   } catch {

@@ -13,7 +13,17 @@ async function readJson(response: Response) {
   try {
     return raw ? JSON.parse(raw) as Record<string, unknown> : {};
   } catch {
-    return { error: `サーバー応答をJSONとして解析できません（HTTP ${response.status}）`, details: raw.slice(0, 500) };
+    const excerpt = raw
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 700);
+    return {
+      error: `サーバー応答をJSONとして解析できません（HTTP ${response.status}）`,
+      details: excerpt || raw.slice(0, 700) || "empty response",
+    };
   }
 }
 
@@ -54,7 +64,10 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
         credentials: "include",
       });
       const payload = await readJson(response);
-      if (!response.ok) throw new Error(String(payload.error ?? "ログインできません"));
+      if (!response.ok) {
+        const details = payload.details ? `\n${String(payload.details)}` : "";
+        throw new Error(`${String(payload.error ?? "ログインできません")}${details}`);
+      }
       setPasscode("");
       setAuth({ status: "authenticated", username: String(payload.username ?? username) });
     } catch (loginError) {
