@@ -215,15 +215,36 @@ function Field({
   suffix?: string;
   placeholder?: string;
 }) {
+  const [draftValue, setDraftValue] = useState<string | null>(null);
+  const inputValue = type === "number" && draftValue !== null ? draftValue : value;
+
   return (
     <label className="block">
       <span className="mb-2 block text-xs text-[#8a999f]">{label}</span>
       <div className="flex items-center rounded-xl border border-white/10 bg-[#090d0f] focus-within:border-[#38e7ae]">
         <input
           type={type}
-          value={value}
+          value={inputValue}
           placeholder={placeholder}
-          onChange={event => onChange(type === "number" ? Number(event.target.value) : event.target.value)}
+          inputMode={type === "number" ? "decimal" : undefined}
+          step={type === "number" ? "any" : undefined}
+          onFocus={() => {
+            if (type === "number" && Number(value) === 0) setDraftValue("");
+          }}
+          onBlur={() => {
+            if (type === "number") setDraftValue(null);
+          }}
+          onChange={event => {
+            if (type !== "number") {
+              onChange(event.target.value);
+              return;
+            }
+            const nextValue = event.target.value;
+            setDraftValue(nextValue);
+            if (nextValue === "") return;
+            const parsed = Number(nextValue);
+            if (Number.isFinite(parsed)) onChange(parsed);
+          }}
           className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-base text-white outline-none placeholder:text-[#455158]"
         />
         {suffix && <span className="pr-3 text-xs text-[#65747a]">{suffix}</span>}
