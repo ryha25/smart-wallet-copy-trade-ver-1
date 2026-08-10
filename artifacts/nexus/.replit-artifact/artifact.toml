@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "NEXT-TRADE"
+description = "A professional crypto trading dashboard for monitoring Solana and EVM wallets, copy-trading, paper trading, and live token analytics. Tracks wallet performance, manages copy-trade positions, and provides real-time price data from DEX Screener and Jupiter."
+version = "1.0.0"
+id = "artifacts/nexus"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18245
+
+[services.development]
+run = "pnpm --filter @workspace/nexus run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/nexus", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/nexus/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18245"
+BASE_PATH = "/"

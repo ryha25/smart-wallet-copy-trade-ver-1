@@ -1,0 +1,1 @@
+- [NEXT-TRADE port](next-trade-port.md) — key fixes needed when porting this Vercel app; CopySettings type gaps, Prisma setup, getTokenQuotes signature.

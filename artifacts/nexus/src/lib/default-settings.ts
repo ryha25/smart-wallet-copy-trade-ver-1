@@ -1,0 +1,22 @@
+import type { CopySettings } from "./types";
+
+export const defaultSettings: CopySettings = {
+  enabled: true,
+  liveTradingEnabled: false,
+  amountPerTrade: 250,
+  maxPositions: 8,
+  maxDailyAmount: 1500,
+  maxWallets: 30,
+  dailyLossLimitEnabled: false,
+  dailyLossLimit: 3,
+  dailyLossIncludeUnrealized: false,
+  stopLossEnabled: true,
+  stopLoss: 8,
+  takeProfitEnabled: true,
+  takeProfit: 20,
+  maxSlippage: 2,
+  allowDuplicate: false,
+  maxDetectionSeconds: 20,
+  maxPriceRiseEnabled: true,
+  maxPriceRise: 5,
+};
