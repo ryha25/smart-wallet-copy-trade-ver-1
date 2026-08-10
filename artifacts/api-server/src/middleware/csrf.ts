@@ -2,6 +2,38 @@ import type { Request, Response, NextFunction } from "express";
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
+function configuredHosts(): Set<string> {
+  const hosts = new Set<string>();
+  const addHost = (value?: string) => {
+    const raw = value?.trim();
+    if (!raw) return;
+    for (const item of raw.split(",")) {
+      const entry = item.trim();
+      if (!entry) continue;
+      try {
+        hosts.add(new URL(/^https?:\/\//i.test(entry) ? entry : `https://${entry}`).host);
+      } catch {
+        // Ignore malformed environment values.
+      }
+    }
+  };
+
+  for (const key of [
+    "APP_ORIGIN",
+    "PUBLIC_APP_URL",
+    "NEXT_PUBLIC_APP_URL",
+    "REPLIT_DOMAINS",
+    "REPLIT_DEV_DOMAIN",
+  ]) {
+    addHost(process.env[key]);
+  }
+  return hosts;
+}
+
+function isTrustedReplitHost(hostname: string): boolean {
+  return hostname.endsWith(".replit.app") || hostname.endsWith(".pike.replit.dev");
+}
+
 /**
  * Validates that mutating requests originate from the same host.
  * Browsers always include the Origin header on cross-origin requests,
@@ -26,7 +58,6 @@ export function csrfOriginCheck(
   }
 
   const host = request.headers["host"] ?? "";
-  const devDomain = process.env.REPLIT_DEV_DOMAIN?.trim();
 
   try {
     const parsed = new URL(origin);
@@ -38,7 +69,7 @@ export function csrfOriginCheck(
     }
 
     // Replit dev/prod domain check
-    if (devDomain && parsed.hostname === devDomain) {
+    if (configuredHosts().has(parsed.host) || isTrustedReplitHost(parsed.hostname)) {
       next();
       return;
     }
