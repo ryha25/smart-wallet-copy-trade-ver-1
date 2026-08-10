@@ -10,6 +10,26 @@ export type LiveTokenQuote = {
   pairUrl: string | null;
 };
 
+export type PopularToken24h = LiveTokenQuote & {
+  rank: number;
+  volume24hUsd: number;
+  txns24h: number;
+  buys24h: number;
+  sells24h: number;
+  pairAgeHours: number | null;
+  boostAmount: number;
+  popularityScore: number;
+  sources: string[];
+};
+
+export type PopularTokens24hResponse = {
+  chain: "solana";
+  window: "24h";
+  tokens: PopularToken24h[];
+  fetchedAt: string;
+  source: "DEXSCREENER_24H_ACTIVITY";
+};
+
 export type LiveWalletEvent = {
   signature: string;
   blockTime: number;

@@ -7,6 +7,7 @@ import {
   analyzeWallet,
   getJupiterPaperQuote,
   getLiveWalletActivity,
+  getPopularTokens24h,
   getTokenQuotes,
   getTokenRisk,
   scanWalletsForToken,
@@ -72,6 +73,15 @@ router.get("/token-wallets", async (request, response) => {
     response.setHeader("cache-control", "no-store").json(data);
   } catch (error) {
     response.status(500).json(apiError(error, "favorite.wallets"));
+  }
+});
+
+router.get("/popular-tokens", async (_request, response) => {
+  try {
+    const data = await getPopularTokens24h();
+    response.setHeader("cache-control", "no-store").json(data);
+  } catch (error) {
+    response.status(500).json(apiError(error, "popular.tokens"));
   }
 });
 

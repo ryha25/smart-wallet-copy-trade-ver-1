@@ -1,6 +1,7 @@
 import type {
   FavoriteWalletScanResponse,
   LiveTokenQuote,
+  PopularTokens24hResponse,
   LiveWalletEvent,
   LiveWalletResponse,
   WalletScanResponse,
@@ -67,6 +68,27 @@ type ParsedMintAccount = {
       };
     };
   } | null;
+};
+
+type DexScreenerPair = {
+  chainId?: string;
+  dexId?: string;
+  url?: string;
+  baseToken?: { address?: string; name?: string; symbol?: string };
+  priceUsd?: string | null;
+  priceChange?: { h24?: number | null };
+  txns?: { h24?: { buys?: number; sells?: number } };
+  volume?: { h24?: number };
+  liquidity?: { usd?: number };
+  marketCap?: number | null;
+  fdv?: number | null;
+  pairCreatedAt?: number | null;
+  boosts?: { active?: number };
+};
+
+type DexScreenerTokenRef = {
+  chainId?: string;
+  tokenAddress?: string;
 };
 
 type RpcAccountInfo = {
@@ -353,6 +375,147 @@ export async function getTokenQuotes(mints: string[]): Promise<Map<string, LiveT
     });
   }
   return result;
+}
+
+async function fetchDexJson<T>(url: string): Promise<T> {
+  const response = await fetch(url, {
+    headers: { accept: "application/json" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(45_000),
+  });
+  const raw = await response.text();
+  if (!response.ok) throw new Error(`DexScreener API error: HTTP ${response.status}; url=${url}; body=${raw.slice(0, 500)}`);
+  try {
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    throw new Error(`DexScreener APIのJSON解析に失敗しました: url=${url}; body=${raw.slice(0, 500)}`, { cause: error });
+  }
+}
+
+async function getDexPairsForTokens(mints: string[]): Promise<DexScreenerPair[]> {
+  const unique = [...new Set(mints)].filter(Boolean).slice(0, 90);
+  const pairs: DexScreenerPair[] = [];
+  for (let index = 0; index < unique.length; index += 30) {
+    const batch = unique.slice(index, index + 30);
+    if (!batch.length) continue;
+    const url = `https://api.dexscreener.com/tokens/v1/solana/${batch.map(encodeURIComponent).join(",")}`;
+    const payload = await fetchDexJson<DexScreenerPair[]>(url);
+    if (Array.isArray(payload)) pairs.push(...payload);
+  }
+  return pairs;
+}
+
+export async function getPopularTokens24h(): Promise<PopularTokens24hResponse> {
+  const searchQueries = (env("POPULAR_TOKEN_SEARCH_QUERIES") || "SOL/USDC,pump,bonk,wif,meme,cat,dog,ai")
+    .split(",")
+    .map(query => query.trim())
+    .filter(Boolean)
+    .slice(0, 12);
+  const pairGroups = await Promise.all([
+    fetchDexJson<DexScreenerTokenRef[]>("https://api.dexscreener.com/token-boosts/top/v1")
+      .then(tokens => getDexPairsForTokens(tokens.filter(token => token.chainId === "solana").map(token => token.tokenAddress ?? "")))
+      .catch(error => {
+        console.warn("[NEXT-TRADE][popular-tokens] boost source failed", { message: error instanceof Error ? error.message : String(error) });
+        return [] as DexScreenerPair[];
+      }),
+    ...searchQueries.map(query => {
+      const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`;
+      return fetchDexJson<{ pairs?: DexScreenerPair[] }>(url)
+        .then(payload => payload.pairs ?? [])
+        .catch(error => {
+          console.warn("[NEXT-TRADE][popular-tokens] search source failed", { query, message: error instanceof Error ? error.message : String(error) });
+          return [] as DexScreenerPair[];
+        });
+    }),
+  ]);
+
+  const grouped = new Map<string, {
+    pair: DexScreenerPair;
+    volume24hUsd: number;
+    buys24h: number;
+    sells24h: number;
+    boostAmount: number;
+    sources: Set<string>;
+  }>();
+
+  for (const pair of pairGroups.flat()) {
+    if (pair.chainId !== "solana") continue;
+    const mint = pair.baseToken?.address;
+    const priceUsd = Number(pair.priceUsd ?? 0);
+    if (!mint || !ADDRESS_PATTERN.test(mint) || !Number.isFinite(priceUsd) || priceUsd <= 0) continue;
+    const liquidityUsd = Number(pair.liquidity?.usd ?? 0);
+    const volume24hUsd = Number(pair.volume?.h24 ?? 0);
+    const buys24h = Number(pair.txns?.h24?.buys ?? 0);
+    const sells24h = Number(pair.txns?.h24?.sells ?? 0);
+    if (liquidityUsd < 5_000 || volume24hUsd <= 0 || buys24h + sells24h <= 0) continue;
+
+    const current = grouped.get(mint);
+    if (!current) {
+      grouped.set(mint, {
+        pair,
+        volume24hUsd,
+        buys24h,
+        sells24h,
+        boostAmount: Number(pair.boosts?.active ?? 0),
+        sources: new Set([pair.dexId ?? "dexscreener"]),
+      });
+      continue;
+    }
+    current.volume24hUsd += volume24hUsd;
+    current.buys24h += buys24h;
+    current.sells24h += sells24h;
+    current.boostAmount += Number(pair.boosts?.active ?? 0);
+    current.sources.add(pair.dexId ?? "dexscreener");
+    if (liquidityUsd > Number(current.pair.liquidity?.usd ?? 0)) current.pair = pair;
+  }
+
+  const now = Date.now();
+  const tokens = Array.from(grouped.entries())
+    .map(([mint, item]) => {
+      const pair = item.pair;
+      const liquidityUsd = Number(pair.liquidity?.usd ?? 0);
+      const marketCapUsd = Number(pair.marketCap ?? pair.fdv ?? 0);
+      const priceChange24h = pair.priceChange?.h24 ?? null;
+      const pairAgeHours = pair.pairCreatedAt ? Math.max(0, (now - pair.pairCreatedAt) / 3_600_000) : null;
+      const txns24h = item.buys24h + item.sells24h;
+      const popularityScore =
+        Math.log10(item.volume24hUsd + 1) * 35
+        + Math.log10(txns24h + 1) * 30
+        + Math.log10(liquidityUsd + 1) * 20
+        + Math.min(Math.abs(Number(priceChange24h ?? 0)), 200) * 0.08
+        + Math.min(item.boostAmount, 100) * 0.25;
+      return {
+        rank: 0,
+        mint,
+        symbol: pair.baseToken?.symbol ?? `${mint.slice(0, 4)}…`,
+        name: pair.baseToken?.name ?? "Unknown token",
+        priceUsd: Number(pair.priceUsd ?? 0),
+        liquidityUsd,
+        marketCapUsd,
+        priceChange24h,
+        dex: pair.dexId ?? "unknown",
+        pairUrl: pair.url ?? null,
+        volume24hUsd: Number(item.volume24hUsd.toFixed(2)),
+        txns24h,
+        buys24h: item.buys24h,
+        sells24h: item.sells24h,
+        pairAgeHours: pairAgeHours == null ? null : Number(pairAgeHours.toFixed(1)),
+        boostAmount: item.boostAmount,
+        popularityScore: Number(popularityScore.toFixed(2)),
+        sources: Array.from(item.sources),
+      };
+    })
+    .sort((a, b) => b.popularityScore - a.popularityScore)
+    .slice(0, 20)
+    .map((token, index) => ({ ...token, rank: index + 1 }));
+
+  return {
+    chain: "solana",
+    window: "24h",
+    tokens,
+    fetchedAt: new Date().toISOString(),
+    source: "DEXSCREENER_24H_ACTIVITY",
+  };
 }
 
 export async function getTokenRisk(mint: string): Promise<TokenRiskCheck> {

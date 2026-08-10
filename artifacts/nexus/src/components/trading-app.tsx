@@ -13,6 +13,7 @@ import {
   Settings as SettingsIcon,
   ShieldCheck,
   Trash2,
+  TrendingUp,
   WalletCards,
   X,
 } from "lucide-react";
@@ -27,6 +28,8 @@ import type {
   FavoriteWalletScanResponse,
   LiveWalletEvent,
   LiveWalletResponse,
+  PopularToken24h,
+  PopularTokens24hResponse,
   SkippedPaperTrade,
   TrackedWallet,
   WalletScanResponse,
@@ -35,7 +38,7 @@ import type {
 } from "../lib/live-types";
 import type { CopySettings, LimitOrder, LiveTradingStatus, TradeModeFilter } from "../lib/types";
 
-type View = "dashboard" | "sources" | "scanner" | "favorites" | "activity" | "settings";
+type View = "dashboard" | "sources" | "scanner" | "popular" | "favorites" | "activity" | "settings";
 type ActivityByWallet = Record<string, LiveWalletResponse>;
 
 const ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -91,6 +94,7 @@ const nav: Array<{ id: View; label: string; icon: typeof Gauge }> = [
   { id: "dashboard", label: "ダッシュボード", icon: Gauge },
   { id: "sources", label: "コピー元ウォレット", icon: WalletCards },
   { id: "scanner", label: "優秀ウォレットスキャン", icon: Radar },
+  { id: "popular", label: "人気銘柄", icon: TrendingUp },
   { id: "favorites", label: "お気に入りコイン", icon: CircleDollarSign },
   { id: "activity", label: "実取引・ペーパー履歴", icon: Activity },
   { id: "settings", label: "コピー設定", icon: SettingsIcon },
@@ -1141,6 +1145,115 @@ function FavoritesView({
   );
 }
 
+function PopularTokensView({
+  onAddFavorite,
+}: {
+  onAddFavorite: (mint: string) => Promise<string | null>;
+}) {
+  const [tokens, setTokens] = useState<PopularToken24h[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [copiedMint, setCopiedMint] = useState<string | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
+
+  const loadRanking = useCallback(async () => {
+    setLoading(true);
+    setMessage(null);
+    try {
+      const payload = await requestJson<PopularTokens24hResponse>("/api/live/popular-tokens", 60_000);
+      setTokens(payload.tokens);
+      setFetchedAt(payload.fetchedAt);
+      if (!payload.tokens.length) setMessage("24時間ランキング候補が見つかりませんでした");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "人気銘柄ランキングの取得に失敗しました");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!tokens.length && !loading) void loadRanking();
+  }, [loadRanking, loading, tokens.length]);
+
+  const copyCa = async (token: PopularToken24h) => {
+    try {
+      await navigator.clipboard.writeText(token.mint);
+      setCopiedMint(token.mint);
+      window.setTimeout(() => setCopiedMint(current => current === token.mint ? null : current), 1800);
+    } catch {
+      setMessage("CAをコピーできませんでした");
+    }
+  };
+
+  const addFavoriteFromRanking = async (token: PopularToken24h) => {
+    setMessage(null);
+    const result = await onAddFavorite(token.mint);
+    setMessage(result ?? `${token.symbol}をお気に入りに登録しました`);
+  };
+
+  return (
+    <>
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">人気銘柄ランキング</h1>
+          <p className="mt-1 text-sm text-[#7f9097]">Solana銘柄を24時間の出来高・取引回数・流動性で独自集計します。</p>
+        </div>
+        <button onClick={() => void loadRanking()} disabled={loading} className="rounded-xl border border-[#38e7ae]/25 bg-[#38e7ae]/10 px-4 py-2 text-sm font-semibold text-[#38e7ae] disabled:opacity-50">
+          {loading ? "更新中…" : "ランキング更新"}
+        </button>
+      </div>
+      <Card>
+        <SectionHeader
+          title="24時間ランキング"
+          note={fetchedAt ? `最終取得 ${new Date(fetchedAt).toLocaleString("ja-JP")}・DexScreener実データ` : "DexScreener実データから取得"}
+          action={<Badge tone="gray">24h</Badge>}
+        />
+        {message && <p className={`whitespace-pre-wrap break-all px-5 pt-4 text-xs leading-relaxed ${message.includes("登録しました") ? "text-emerald-300" : "text-amber-300"}`}>{message}</p>}
+        {loading ? (
+          <div className="flex items-center justify-center gap-3 px-5 py-14 text-xs text-[#819097]"><RefreshCw size={15} className="animate-spin text-[#38e7ae]" />24時間ランキングを取得中…</div>
+        ) : tokens.length ? (
+          <div className="divide-y divide-white/[0.07]">
+            {tokens.map(token => (
+              <div key={token.mint} className="p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge tone={token.rank <= 5 ? "green" : "gray"}>#{token.rank}</Badge>
+                      <h2 className="font-semibold text-white">{token.name}</h2>
+                      <Badge>{token.symbol}</Badge>
+                      <Badge tone={token.priceChange24h != null && token.priceChange24h >= 0 ? "green" : "red"}>{token.priceChange24h == null ? "24h --" : pct(token.priceChange24h)}</Badge>
+                    </div>
+                    <p className="mt-2 break-all font-mono text-[10px] text-[#65757b]">{token.mint}</p>
+                    <p className="mt-2 text-[11px] text-[#65757b]">{token.dex}・{token.sources.slice(0, 4).join(" / ")}{token.sources.length > 4 ? "…" : ""}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => void copyCa(token)} className="rounded-lg border border-white/10 px-3 py-2 text-xs text-[#b5c0c4] hover:border-[#38e7ae] hover:text-[#38e7ae]">{copiedMint === token.mint ? "コピーしました" : "CAコピー"}</button>
+                    <button onClick={() => void addFavoriteFromRanking(token)} className="rounded-lg border border-[#38e7ae]/30 bg-[#38e7ae]/10 px-3 py-2 text-xs font-medium text-[#38e7ae] hover:bg-[#38e7ae]/20">お気に入り登録</button>
+                    {token.pairUrl && <a href={token.pairUrl} target="_blank" rel="noreferrer" className="rounded-lg border border-white/10 px-3 py-2 text-xs text-[#a0b0b6] hover:text-white">DEXで開く</a>}
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:grid-cols-6">
+                  <div className="rounded-xl bg-[#0b1113] p-3"><span className="text-[#65757b]">価格</span><p className="mt-1 font-semibold tabular-nums text-white">{tokenPrice(token.priceUsd)}</p></div>
+                  <div className="rounded-xl bg-[#0b1113] p-3"><span className="text-[#65757b]">24h出来高</span><p className="mt-1 font-semibold tabular-nums text-[#38e7ae]">{money(token.volume24hUsd)}</p></div>
+                  <div className="rounded-xl bg-[#0b1113] p-3"><span className="text-[#65757b]">24h取引</span><p className="mt-1 font-semibold tabular-nums text-white">{token.txns24h.toLocaleString("en-US")}件</p></div>
+                  <div className="rounded-xl bg-[#0b1113] p-3"><span className="text-[#65757b]">買い/売り</span><p className="mt-1 font-semibold tabular-nums text-white">{token.buys24h}/{token.sells24h}</p></div>
+                  <div className="rounded-xl bg-[#0b1113] p-3"><span className="text-[#65757b]">流動性</span><p className="mt-1 font-semibold tabular-nums text-white">{money(token.liquidityUsd)}</p></div>
+                  <div className="rounded-xl bg-[#0b1113] p-3"><span className="text-[#65757b]">MC</span><p className="mt-1 font-semibold tabular-nums text-white">{compactMoney(token.marketCapUsd)}</p></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyState title="人気銘柄ランキングは未取得です" detail="ランキング更新を押すと、24時間の出来高・取引回数からSolana銘柄を取得します。" />
+        )}
+      </Card>
+      <div className="mt-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-4 text-xs leading-6 text-amber-100/70">
+        人気ランキングは投資推奨ではありません。短期で出来高が急増した銘柄にはラグプルや急落リスクもあるため、購入前に流動性・MC・チャート・危険判定を確認してください。
+      </div>
+    </>
+  );
+}
+
 function ActivityView({
   activities,
   positions,
@@ -2075,6 +2188,7 @@ export function TradingApp() {
           {view === "dashboard" && <Dashboard wallets={wallets} positions={positions} activities={activities} skipped={skipped} lastRefresh={lastRefresh} liveMode={settings.liveTradingEnabled} liveStatus={liveStatus} limitOrders={limitOrders} onClose={closePosition} onCreateLimitOrder={createLimitOrder} onCancelLimitOrder={cancelLimitOrder} />}
           {view === "sources" && <Sources wallets={wallets} activities={activities} busy={busy} onAdd={addManual} onDelete={removeWallet} onToggle={toggleWallet} onStopAll={stopAllWallets} onRefresh={refreshWallet} onRefreshAll={refreshAll} />}
           {view === "scanner" && <Scanner network={scanNetwork} onNetworkChange={setScanNetwork} result={scanResult} scanState={scanState} scanning={scanState?.status === "RUNNING"} wallets={wallets} autoCount={wallets.length} onScan={scan} onAddCandidate={addScanCandidate} />}
+          {view === "popular" && <PopularTokensView onAddFavorite={addFavorite} />}
           {view === "favorites" && <FavoritesView favorites={favorites} activities={activities} limitOrders={limitOrders} onAdd={addFavorite} onDelete={mint => setFavorites(current => current.filter(token => token.mint !== mint))} onAddManual={addManual} onCreateLimitOrder={createLimitOrder} onCancelLimitOrder={cancelLimitOrder} />}
           {view === "activity" && <MobileActivityView activities={activities} positions={positions} skipped={skipped} onClose={closePosition} />}
           {view === "settings" && <SettingsView settings={settings} liveStatus={liveStatus} dailyLoss={dailyLoss} ntfyConfig={ntfyConfig} onChange={setSettings} />}
