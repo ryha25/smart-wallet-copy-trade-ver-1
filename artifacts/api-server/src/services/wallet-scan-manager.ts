@@ -45,6 +45,22 @@ function jsonResult(result: WalletScanResponse) {
   return result as unknown as Prisma.InputJsonValue;
 }
 
+function eligibleRankingScore(score: WalletScore) {
+  return score.closedTrades >= 3 && score.winRate >= 50;
+}
+
+function normalizeRankingResult(result: WalletScanResponse | null) {
+  if (!result) return null;
+  const rankingPool = rankScores((result.rankingPool ?? result.evaluated).filter(eligibleRankingScore));
+  const evaluated = rankingPool.slice(0, 10);
+  return {
+    ...result,
+    rankingPool,
+    evaluated,
+    qualified: evaluated.filter(score => score.addable).slice(0, 5),
+  };
+}
+
 function runToState(run: {
   id: string;
   status: "RUNNING" | "COMPLETED" | "FAILED";
@@ -71,7 +87,7 @@ function runToState(run: {
     startedAt: run.startedAt.toISOString(),
     completedAt: run.completedAt?.toISOString() ?? null,
     databaseEnabled: databaseEnabled(),
-    result: run.result as WalletScanResponse | null,
+    result: normalizeRankingResult(run.result as WalletScanResponse | null),
     error: run.error,
   };
 }
@@ -102,14 +118,14 @@ async function loadLatestState() {
         });
         const failedState = runToState(failed);
         if (!failedState.result && latestCompleted?.result) {
-          failedState.result = latestCompleted.result as unknown as WalletScanResponse;
+          failedState.result = normalizeRankingResult(latestCompleted.result as unknown as WalletScanResponse);
         }
         return failedState;
       }
     }
     const state = runToState(run);
     if (!state.result && latestCompleted?.result) {
-      state.result = latestCompleted.result as unknown as WalletScanResponse;
+      state.result = normalizeRankingResult(latestCompleted.result as unknown as WalletScanResponse);
     }
     return state;
   } catch (error) {
@@ -128,31 +144,32 @@ async function saveScores(scores: WalletScore[], rankingEligible = false) {
   if (!prisma || scores.length === 0) return;
   const db = prisma;
   const analyzedAt = new Date();
-  await db.$transaction(scores.map(score =>
-    db.walletAnalysisCache.upsert({
+  await db.$transaction(scores.map(score => {
+    const eligible = rankingEligible && eligibleRankingScore(score);
+    return db.walletAnalysisCache.upsert({
       where: { network_address: { network: "SOLANA", address: score.address } },
       create: {
         network: "SOLANA",
         address: score.address,
         score: jsonScore(score),
         sources: score.sources,
-        rankingEligible,
+        rankingEligible: eligible,
         lastSeenAt: analyzedAt,
         lastAnalyzedAt: analyzedAt,
       },
       update: {
         score: jsonScore(score),
         sources: score.sources,
-        ...(rankingEligible ? { rankingEligible: true } : {}),
+        ...(rankingEligible ? { rankingEligible: eligible } : {}),
         lastSeenAt: analyzedAt,
         lastAnalyzedAt: analyzedAt,
       },
-    }),
-  ));
+    });
+  }));
 }
 
 function rankScores(scores: WalletScore[]) {
-  return [...scores].sort((a, b) =>
+  return scores.filter(eligibleRankingScore).sort((a, b) =>
     b.avgTradesPerDay - a.avgTradesPerDay
     || b.score - a.score
     || b.winRate - a.winRate
@@ -178,7 +195,8 @@ async function mergeWithCachedRanking(result: WalletScanResponse) {
   const scores = new Map<string, WalletScore>();
   for (const row of rows) {
     const score = row.score as unknown as WalletScore;
-    if (score && typeof score.address === "string" && Number.isFinite(score.score)) {
+    if (score && typeof score.address === "string" && Number.isFinite(score.score)
+      && score.closedTrades >= 3 && score.winRate >= 50) {
       scores.set(score.address, score);
     }
   }

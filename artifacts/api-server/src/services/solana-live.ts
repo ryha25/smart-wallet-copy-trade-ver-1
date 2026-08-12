@@ -792,7 +792,9 @@ function scoreWallet(address: string, events: LiveWalletEvent[], ageDays: number
   const blockers: string[] = [];
   if (roi30d > 0 && roi30d < 20) warnings.push("30日ROIが20%未満（低水準）");
   else if (roi30d >= 20 && roi30d < 60) warnings.push("30日ROIが60%未満（採用可能・注意）");
-  if (winRate < 60) warnings.push("勝率が60%未満");
+  if (closed.length < 3) blockers.push("勝率算出に必要な決済取引データが不足");
+  else if (winRate < 50) blockers.push("勝率50%未満");
+  else if (winRate < 60) warnings.push("勝率が60%未満");
   if (events.length < 20) warnings.push("30日売買件数が20件未満");
   if (avgTradesPerDay < 1) warnings.push("1日平均取引回数が1回未満");
   if (activeTradingDays < 10) warnings.push("取引日の継続性が不足");
@@ -1057,13 +1059,16 @@ export async function scanProfitableWallets(options: WalletScanOptions = {}): Pr
     item.score.reasons = [...item.score.blockers, ...item.score.warnings];
   });
 
-  const ranked = analyzed.map(item => item.score).sort((a, b) =>
-    b.score - a.score
-    || b.avgTradesPerDay - a.avgTradesPerDay
-    || b.activeTradingDays - a.activeTradingDays
-    || b.realizedProfitUsd - a.realizedProfitUsd
-    || a.address.localeCompare(b.address),
-  );
+  const ranked = analyzed.map(item => item.score)
+    .filter(score => score.closedTrades >= 3 && score.winRate >= 50)
+    .sort((a, b) =>
+      b.avgTradesPerDay - a.avgTradesPerDay
+      || b.winRate - a.winRate
+      || b.score - a.score
+      || b.activeTradingDays - a.activeTradingDays
+      || b.realizedProfitUsd - a.realizedProfitUsd
+      || a.address.localeCompare(b.address),
+    );
   const evaluated = ranked.slice(0, 10);
   const successfulAnalyses = analyzed.filter(item => !item.score.blockers.some(reason => reason.startsWith("解析失敗"))).length;
   const availableSources = discoveryResults.filter(result => !result.error).map(result => result.source);

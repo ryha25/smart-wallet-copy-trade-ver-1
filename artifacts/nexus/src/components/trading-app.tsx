@@ -397,7 +397,8 @@ function Dashboard({
                       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#172227] text-xs font-bold text-[#38e7ae]">{position.symbol[0]}</div>
                       <div className="min-w-0 flex-1">
                         <p className="font-semibold">{position.symbol}</p>
-                        <p className="truncate font-mono text-[10px] text-[#66767c]">{shortAddress(position.wallet)}・{position.executionMode === "LIVE" ? "LIVE" : "PAPER"}</p>
+                        <p className="truncate font-mono text-[10px] text-[#66767c]">{position.sourceWalletLabel || shortAddress(position.wallet)}・{position.executionMode === "LIVE" ? "LIVE" : "PAPER"}</p>
+                        {position.sourceWalletRemoved && <p className="mt-1 text-[10px] text-amber-300">コピー元解除済み</p>}
                         <p className="mt-1 text-[10px] text-[#718188]">{valueDisplay === "PRICE" ? `購入 ${tokenPrice(position.copyPriceUsd)} / 現在 ${tokenPrice(position.currentPriceUsd)}` : `購入時MC ${compactMoney(position.entryMarketCapUsd)} / 現在MC ${compactMoney(position.currentMarketCapUsd)}`}</p>
                       </div>
                       <div className="flex shrink-0 flex-col items-end">
@@ -1477,7 +1478,7 @@ function MobileActivityView({
             const result = calculatePaperPnl(position.copyPriceUsd, price, position.amountUsd);
             return (
               <div key={position.id} className="px-4 py-4 text-xs sm:px-5">
-                <div className="flex items-center gap-2"><Badge tone={position.status === "OPEN" ? "green" : "gray"}>{position.status === "OPEN" ? "保有中" : "決済済み"}</Badge><Badge tone={position.executionMode === "LIVE" ? "red" : "gray"}>{position.executionMode === "LIVE" ? "LIVE" : "PAPER"}</Badge><span className="font-semibold">{position.symbol}</span><span className="ml-auto font-mono text-[#718188]">{shortAddress(position.wallet)}</span></div>
+                <div className="flex items-center gap-2"><Badge tone={position.status === "OPEN" ? "green" : "gray"}>{position.status === "OPEN" ? "保有中" : "決済済み"}</Badge><Badge tone={position.executionMode === "LIVE" ? "red" : "gray"}>{position.executionMode === "LIVE" ? "LIVE" : "PAPER"}</Badge>{position.sourceWalletRemoved && <Badge tone="amber">コピー元解除済み</Badge>}<span className="font-semibold">{position.symbol}</span><span className="ml-auto font-mono text-[#718188]">{shortAddress(position.wallet)}</span></div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-[#87969b]"><span>仮想額 {money(position.amountUsd)}</span><span className={result.pnlUsd >= 0 ? "text-[#38e7ae]" : "text-rose-300"}>損益 {money(result.pnlUsd, true)} / {pct(result.pnlPct)}</span></div>
                 <p className="mt-2 text-[#718188]">{valueDisplay === "PRICE" ? `購入 ${tokenPrice(position.copyPriceUsd)} / ${position.status === "CLOSED" ? "売却" : "現在"} ${tokenPrice(price)}` : `購入時MC ${compactMoney(position.entryMarketCapUsd)} / ${position.status === "CLOSED" ? "売却時MC" : "現在MC"} ${compactMoney(position.status === "CLOSED" ? position.exitMarketCapUsd : position.currentMarketCapUsd)}`}</p>
                 <div className="mt-3 flex justify-end">{position.status === "OPEN" ? <button onClick={() => onClose(position, "手動決済")} className="text-rose-300">手動決済</button> : <span className="text-[#718188]">{position.exitReason}</span>}</div>
@@ -1503,7 +1504,7 @@ function MobileActivityView({
         renderContent={() => filteredSkipped.length ? (
           <div className="divide-y divide-white/[0.07]">{[...filteredSkipped].sort((a, b) => Date.parse(b.detectedAt) - Date.parse(a.detectedAt)).map(item => (
             <div key={item.id} className="px-4 py-4 text-xs sm:px-5">
-              <div className="flex items-center gap-2"><Badge tone="amber">見送り</Badge><Badge tone={item.executionMode === "LIVE" ? "red" : "gray"}>{item.executionMode ?? "UNKNOWN"}</Badge><span className="font-semibold">{item.symbol}</span><span className="ml-auto font-mono text-[#718188]">{shortAddress(item.wallet)}</span></div>
+              <div className="flex items-center gap-2"><Badge tone="amber">見送り</Badge><Badge tone={item.executionMode === "LIVE" ? "red" : "gray"}>{item.executionMode ?? "UNKNOWN"}</Badge>{item.sourceWalletRemoved && <Badge tone="amber">コピー元解除済み</Badge>}<span className="font-semibold">{item.symbol}</span><span className="ml-auto font-mono text-[#718188]">{shortAddress(item.wallet)}</span></div>
               <p className="mt-2 text-[#a4b0b4]">{item.reason}</p>
             </div>
           ))}</div>

@@ -185,6 +185,9 @@ export type LivePaperPosition = {
   id: string;
   signature: string;
   wallet: string;
+  sourceWalletLabel?: string;
+  sourceWalletOrigin?: "MANUAL" | "AUTO" | "FAVORITE";
+  sourceWalletRemoved?: boolean;
   mint: string;
   symbol: string;
   openedAt: string;
@@ -228,6 +231,9 @@ export type SkippedPaperTrade = {
   id: string;
   signature: string;
   wallet: string;
+  sourceWalletLabel?: string;
+  sourceWalletOrigin?: "MANUAL" | "AUTO" | "FAVORITE";
+  sourceWalletRemoved?: boolean;
   mint: string;
   symbol: string;
   detectedAt: string;

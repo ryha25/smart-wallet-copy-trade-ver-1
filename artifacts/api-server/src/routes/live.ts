@@ -198,6 +198,8 @@ const mapTrackedWallet = (wallet: {
   lastCheckedAt: wallet.lastCheckedAt?.toISOString() ?? null,
 });
 
+const REMOVED_COPY_SOURCE_FLAG = "COPY_SOURCE_REMOVED";
+
 function trackedWalletInput(body: Partial<TrackedWallet>) {
   const network = (body.network ?? "SOLANA").toUpperCase() as ChainNetwork;
   if (network !== "SOLANA" && network !== "ETHEREUM") throw new Error("未対応ネットワークです");
@@ -221,7 +223,10 @@ router.get("/tracked-wallets", async (_request, response) => {
     if (!prisma) throw new Error("DATABASE_URLが未設定です");
     installCopyMonitor();
     const wallets = await prisma.trackedWallet.findMany({
-      where: { network: { in: ["SOLANA", "ETHEREUM"] } },
+      where: {
+        network: { in: ["SOLANA", "ETHEREUM"] },
+        NOT: { riskFlags: { has: REMOVED_COPY_SOURCE_FLAG } },
+      },
       orderBy: { createdAt: "asc" },
     });
     response.setHeader("cache-control", "no-store").json(wallets.map(mapTrackedWallet));
@@ -234,6 +239,11 @@ router.post("/tracked-wallets", async (request, response) => {
   try {
     if (!prisma) throw new Error("DATABASE_URLが未設定です");
     const input = trackedWalletInput(request.body as Partial<TrackedWallet>);
+    const existing = await prisma.trackedWallet.findUnique({
+      where: { network_address: { network: input.network, address: input.address } },
+      select: { riskFlags: true },
+    });
+    const restoredRiskFlags = (existing?.riskFlags ?? []).filter(flag => flag !== REMOVED_COPY_SOURCE_FLAG);
     const wallet = await prisma.trackedWallet.upsert({
       where: { network_address: { network: input.network, address: input.address } },
       create: {
@@ -248,6 +258,7 @@ router.post("/tracked-wallets", async (request, response) => {
         displayName: input.displayName,
         origin: input.origin,
         isCopyEnabled: input.enabled,
+        riskFlags: restoredRiskFlags,
       },
     });
     installCopyMonitor();
@@ -279,15 +290,16 @@ router.delete("/tracked-wallets", async (request, response) => {
     const input = trackedWalletInput(request.body as Partial<TrackedWallet>);
     const wallet = await prisma.trackedWallet.findUniqueOrThrow({
       where: { network_address: { network: input.network, address: input.address } },
-      select: { id: true },
+      select: { id: true, riskFlags: true },
     });
-    await prisma.$transaction([
-      prisma.paperTrade.deleteMany({ where: { sourceWalletId: wallet.id } }),
-      prisma.paperPosition.deleteMany({ where: { sourceWalletId: wallet.id } }),
-      prisma.skippedTrade.deleteMany({ where: { sourceWalletId: wallet.id } }),
-      prisma.trackedWallet.delete({ where: { id: wallet.id } }),
-    ]);
-    response.setHeader("cache-control", "no-store").json({ deleted: true });
+    await prisma.trackedWallet.update({
+      where: { id: wallet.id },
+      data: {
+        isCopyEnabled: false,
+        riskFlags: [...new Set([...wallet.riskFlags, REMOVED_COPY_SOURCE_FLAG])],
+      },
+    });
+    response.setHeader("cache-control", "no-store").json({ deleted: true, historyPreserved: true });
   } catch (error) {
     response.status(400).json(apiError(error, "tracked-wallets.delete"));
   }
@@ -388,6 +400,9 @@ router.put("/copy-monitor", async (_request, response) => {
         id: position.id,
         signature: position.sourceSignature ?? position.id,
         wallet: position.sourceWallet.address,
+        sourceWalletLabel: position.sourceWallet.displayName,
+        sourceWalletOrigin: position.sourceWallet.origin,
+        sourceWalletRemoved: position.sourceWallet.riskFlags.includes(REMOVED_COPY_SOURCE_FLAG),
         mint: position.tokenMint,
         symbol: position.tokenSymbol,
         openedAt: position.copiedAt.toISOString(),
@@ -418,6 +433,9 @@ router.put("/copy-monitor", async (_request, response) => {
         id: item.id,
         signature: item.sourceSignature ?? item.id,
         wallet: item.sourceWallet.address,
+        sourceWalletLabel: item.sourceWallet.displayName,
+        sourceWalletOrigin: item.sourceWallet.origin,
+        sourceWalletRemoved: item.sourceWallet.riskFlags.includes(REMOVED_COPY_SOURCE_FLAG),
         mint: item.tokenMint,
         symbol: item.tokenSymbol ?? item.tokenMint.slice(0, 8),
         detectedAt: item.detectedAt.toISOString(),
